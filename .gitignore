@@ -1,0 +1,23 @@
+# Binaries
+bin/
+dist/
+streamgate
+streamgate.exe
+streamgate-bench
+streamgate-bench.exe
+
+# Web frontend dependencies & build
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Go build & test
+*.test
+*.out
+*.prof
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
+Thumbs.db
