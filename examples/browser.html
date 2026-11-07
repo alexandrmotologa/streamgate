@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>streamgate — Browser EventSource Example</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0b1120; color: #f8fafc; padding: 2rem; max-width: 800px; margin: auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-family: monospace; }
+    .connected { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+    .disconnected { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+    #log { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 1rem; height: 350px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; margin-top: 1rem; }
+    .entry { margin-bottom: 0.5rem; border-bottom: 1px solid #0f172a; padding-bottom: 0.4rem; }
+    .id { color: #38bdf8; }
+    .event { color: #c084fc; font-weight: bold; }
+    .time { color: #64748b; font-size: 0.75rem; }
+    input, button { padding: 0.5rem 0.8rem; border-radius: 6px; font-size: 0.85rem; border: 1px solid #334155; }
+    input { background: #0f172a; color: #f8fafc; width: 250px; }
+    button { background: #10b981; color: #020617; font-weight: 600; cursor: pointer; border: none; }
+    button:hover { background: #059669; }
+  </style>
+</head>
+<body>
+  <h1>streamgate EventSource Client</h1>
+  <p>Native browser SSE subscriber with automatic <code style="color:#38bdf8">Last-Event-ID</code> reconnection replay.</p>
+
+  <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+    <input id="channelInput" type="text" value="finance-trades" placeholder="Channel name">
+    <button id="connectBtn" onclick="toggleConnect()">Connect</button>
+    <span id="statusBadge" class="badge disconnected">Disconnected</span>
+  </div>
+
+  <div id="log"></div>
+
+  <script>
+    let es = null;
+    const logEl = document.getElementById('log');
+    const badgeEl = document.getElementById('statusBadge');
+    const btnEl = document.getElementById('connectBtn');
+    const channelInput = document.getElementById('channelInput');
+
+    function toggleConnect() {
+      if (es) {
+        es.close();
+        es = null;
+        badgeEl.textContent = 'Disconnected';
+        badgeEl.className = 'badge disconnected';
+        btnEl.textContent = 'Connect';
+        addLog('System', 'Disconnected from gateway');
+        return;
+      }
+
+      const channel = encodeURIComponent(channelInput.value.trim() || 'default');
+      const url = `/v1/subscribe?channel=${channel}`;
+      es = new EventSource(url);
+
+      badgeEl.textContent = 'Connecting...';
+
+      es.onopen = () => {
+        badgeEl.textContent = 'Connected (SSE)';
+        badgeEl.className = 'badge connected';
+        btnEl.textContent = 'Disconnect';
+        addLog('System', `Connected to channel: ${channelInput.value}`);
+      };
+
+      es.onerror = () => {
+        badgeEl.textContent = 'Reconnecting...';
+        badgeEl.className = 'badge disconnected';
+      };
+
+      es.onmessage = (e) => {
+        addLog('message', e.data, e.lastEventId);
+      };
+
+      // Custom events listener
+      const commonEvents = ['trade.executed', 'token.delta', 'system.alert'];
+      commonEvents.forEach(evt => {
+        es.addEventListener(evt, (e) => {
+          addLog(evt, e.data, e.lastEventId);
+        });
+      });
+    }
+
+    function addLog(event, data, id) {
+      const entry = document.createElement('div');
+      entry.className = 'entry';
+      const time = new Date().toLocaleTimeString();
+      entry.innerHTML = `<span class="time">[${time}]</span> ` +
+        (id ? `<span class="id">#${id}</span> ` : '') +
+        `<span class="event">[${event}]</span>: <span>${escapeHtml(data)}</span>`;
+      logEl.appendChild(entry);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      const p = document.createElement('p');
+      p.textContent = str;
+      return p.innerHTML;
+    }
+  </script>
+</body>
+</html>

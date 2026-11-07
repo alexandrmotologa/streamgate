@@ -1,140 +1,166 @@
-# `streamgate` — Architecture & Engineering Master Plan
+# streamgate — Architecture and Engineering Master Plan
 
 > **High-Throughput HTTP Event-Stream (SSE) Multiplexer & Fan-Out Broadcast Gateway (< 45MB RAM)**  
-> *Pusher, Ably, and Mercure Alternative in a Single Binary (Go + React 19)*
+> Production-grade alternative to Pusher, Ably, and Mercure in a single self-contained Go binary with an embedded React 19 telemetry console.
 
 ---
 
-## 1. Executive Summary & Problem Space
+## 1. Executive Summary and Architecture Overview
 
-### The Core Problem
-The rapid rise of AI applications (streaming token-by-token LLM completions), real-time financial dashboards, live sports tickers, and collaborative web software demands persistent, real-time data streaming to client browsers.
+### Problem Statement
+Modern applications (AI token streaming, real-time analytics, financial tickers, live notifications, collaborative canvases) need persistent real-time message streams delivered to web and mobile clients.
 
-However, holding tens of thousands of long-lived HTTP connections directly inside traditional application backends (Python/FastAPI, Node.js, Ruby on Rails, Django, PHP) causes severe architectural problems:
-1. **Connection Exhaustion & Memory Bloat**: Web servers run out of worker threads or file descriptors, causing incoming API requests to queue and time out.
-2. **Expensive SaaS Lock-In (Pusher, Ably)**: Commercial cloud pub/sub platforms charge exorbitant fees (\$99–\$999+/month) based on peak concurrent connections and monthly message quotas.
-3. **Connection Drops on Mobile Networks**: Cellular network handovers and subway tunnels frequently break connections. Without an automated `Last-Event-ID` replay buffer, users miss critical events during reconnections.
+Holding tens of thousands of long-lived HTTP/2 or HTTP/1.1 connections directly inside application backends (Python/FastAPI, Node.js, Ruby on Rails, Django, PHP) leads to severe failure modes:
+1. **Connection Exhaustion and Memory Bloat**: Worker pools and file descriptors deplete rapidly, causing standard request/response endpoints to queue and time out.
+2. **Expensive SaaS Lock-In**: Commercial hosted pub/sub services charge high recurring fees scaled on peak concurrent connections and monthly message volumes.
+3. **Disconnections on Mobile Networks**: Cellular handovers and network dropouts sever streams. Without deterministic event ID replay buffers, clients permanently lose messages during reconnection windows.
 
-### The Solution: `streamgate`
-`streamgate` is an ultra-fast, single-binary event-stream multiplexer written in Go with an embedded React 19 operations cockpit. It sits between client browsers and your backend services. Your backend publishes an event once via an internal HTTP POST or Redis Pub/Sub message, and `streamgate` fans out that single event to 50,000+ connected clients simultaneously over Server-Sent Events (SSE) on HTTP/2 or HTTP/1.1 with sub-millisecond latencies and less than 45MB of idle RAM.
-
----
-
-## 2. System Architecture & Fan-Out Pipeline
+### The Solution: streamgate
+`streamgate` acts as a dedicated event-stream multiplexer and fan-out broadcast gateway. Backend services publish an event once through an internal HTTP POST endpoint, and `streamgate` broadcasts that event to tens of thousands of connected subscribers over Server-Sent Events (SSE) with sub-millisecond dispatch latency and under 45MB of memory usage.
 
 ```
-[ Backend Application (Python, Node, Go, Ruby) ]
-                       │
-                       │  POST /api/v1/publish/channels/{channel_id}
-                       ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        `streamgate` Gateway Engine                     │
-│                                                                        │
-│  ┌───────────────────────┐         ┌────────────────────────────────┐  │
-│  │ Channel Auth & JWT    │ ──────► │ Ingestion Buffer & Event ID    │  │
-│  │ Permission Verifier   │         │ Generator (ULID / Monotonic)   │  │
-│  └───────────────────────┘         └────────────────┬───────────────┘  │
-│                                                     │                  │
-│                                                     ▼                  │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Circular Memory Ring Buffer (Per-Channel Replay Cache, 1k items) │  │
-│  │ - Instant fast-forward replay for reconnecting `Last-Event-ID`   │  │
-│  └──────────────────────────────────┬───────────────────────────────┘  │
-│                                     │ Zero-Allocation Broadcast        │
-│                                     ▼                                  │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Lock-Free Sharded Subscriber Table (sync.Map / Lock-Striping)    │  │
-│  │ - 50,000+ Goroutine-backed client streams                        │  │
-│  │ - Periodic Keep-Alive Ping Generator (`:keepalive\n\n`)          │  │
-│  │ - Adaptive Gzip / Deflate Stream Compression                     │  │
-│  └──────────────────────────────────┬───────────────────────────────┘  │
-│                                     │                                  │
-│         ┌───────────────────────────┴──────────────────────────┐       │
-│         ▼                                                      ▼       │
-│  [ Client Browsers / Apps ]                          [ Client Browsers ]
-│  GET /v1/subscribe/channels/ai-chat                  GET /v1/subscribe/channels/crypto
-│  (HTTP/2 & HTTP/1.1 SSE Stream)                      (HTTP/2 & HTTP/1.1 SSE Stream)
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Embedded React 19 Operations Cockpit                             │  │
-│  │ - Real-time channel inspector, subscriber gauges, message chart  │  │
-│  │ - Interactive Test Publisher & Live Event Tagger                 │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
++--------------------------------------------------------------------------+
+| Backend Services (Go, Python, Node, Ruby, Java, Elixir, Rust)            |
++--------------------------------------------------------------------------+
+                                    |
+                                    | POST /api/v1/publish (Single or Batch)
+                                    v
++--------------------------------------------------------------------------+
+| streamgate Engine                                                        |
+|                                                                          |
+|  +--------------------------------+   +-------------------------------+  |
+|  | Authentication & Rate Limiter  |-->| Event ID Generator            |  |
+|  | - API Key / JWT Claims         |   | - Monotonic 64-bit Timestamp  |  |
+|  +--------------------------------+   +---------------+---------------+  |
+|                                                       |                  |
+|                                                       v                  |
+|  +--------------------------------------------------------------------+  |
+|  | Per-Channel Circular Ring Buffer (1,024 to 65,536 items)           |  |
+|  | - In-memory O(1) append                                            |  |
+|  | - Zero-allocation slice retrieval for Last-Event-ID replay          |  |
+|  +------------------------------------+-------------------------------+  |
+|                                       |                                  |
+|                                       | Broadcast Fan-Out                |
+|                                       v                                  |
+|  +--------------------------------------------------------------------+  |
+|  | Sharded Subscriber Table (64 Stripes with RWMutex)                 |  |
+|  | - Fast path reads with lock striping                               |  |
+|  | - Bounded non-blocking client write queues (backpressure safe)     |  |
+|  | - Automatic keep-alive heartbeat generator (:ping comments)        |  |
+|  +------------------------------------+-------------------------------+  |
+|                                       |                                  |
+|         +-----------------------------+-----------------------------+    |
+|         |                                                           |    |
+|         v                                                           v    |
+|  +-----------------------------+             +-----------------------------+
+|  | Client Browser / App        |             | Client Browser / App        |
+|  | GET /v1/subscribe?channel=x |             | GET /v1/subscribe?channel=y |
+|  | (HTTP/2 or HTTP/1.1 SSE)    |             | (HTTP/2 or HTTP/1.1 SSE)    |
+|  +-----------------------------+             +-----------------------------+
+|                                                                          |
+|  +--------------------------------------------------------------------+  |
+|  | Embedded React 19 Operations Cockpit                               |  |
+|  | - Real-time channel inspector, subscriber gauges, message charts   |  |
+|  | - Interactive test publisher and live event tagger                 |  |
+|  +--------------------------------------------------------------------+  |
++--------------------------------------------------------------------------+
 ```
 
 ---
 
-## 3. Technology Stack
+## 2. Core Technical Specifications
 
-| Layer | Component | Specification |
+| Component | Technical Choice | Rationale |
 | :--- | :--- | :--- |
-| **Language & Runtime** | Go 1.23+ | Native concurrency with lightweight goroutines (2KB stack each), zero CGo |
-| **HTTP Transport** | `net/http` + HTTP/2 | Native HTTP/2 multiplexing allowing multiple SSE channels over a single TCP connection |
-| **Connection Fan-Out** | Lock-Free Sharded Table | Lock-striped subscriber dispatch achieving > 100,000 msgs/sec fan-out |
-| **Replay Cache** | Circular Ring Buffer | Per-channel in-memory ring buffer (1,000 events) for `Last-Event-ID` reconnection recovery |
-| **Authorization** | JWT & HMAC Tokens | Validates channel read/write permissions via standard JWT claims or presigned tokens |
-| **Embedded Web UI** | React 19 + TypeScript + Vite | Built as a single bundle and served via Go `//go:embed` |
-| **UI Styling** | Tailwind CSS + Lucide Icons | High-density dark-mode real-time operations console |
+| **Language & Runtime** | Go 1.23+ | Lightweight goroutine scheduling (~2KB initial stack per connection), predictable garbage collection, zero external runtime dependencies. |
+| **Transport Layer** | `net/http` + HTTP/2 | Native HTTP/2 multiplexing across a single TCP connection, fallback to HTTP/1.1 Chunked Transfer-Encoding for older clients. |
+| **Fan-Out Dispatch** | 64-way Lock-Striped Registry | Reduces mutex contention across tens of thousands of subscribers during concurrent broadcast bursts. |
+| **Replay Cache** | Circular Ring Buffer | Fixed-capacity array with modular indexing. Avoids dynamic allocations during steady-state broadcast operations. |
+| **Backpressure Control** | Bounded Buffer with Drop/Disconnect Policy | Slow clients do not block the broadcaster goroutine or exhaust gateway memory. |
+| **Authentication** | Bearer API Key & JWT | Secret API tokens protect publish endpoints; JWT tokens with channel wildcard claims validate subscriber connections. |
+| **Telemetry & Metrics** | Prometheus Exporter + Internal SSE | Standard `/metrics` endpoint for Prometheus/Grafana, plus internal SSE channel streaming stats directly to the web console. |
+| **Embedded Web Console** | React 19 + TypeScript + Vite | Built as static single-page application assets and embedded into the Go binary with `//go:embed`. |
 
 ---
 
-## 4. Repository & Directory Structure
+## 3. Directory Layout
 
 ```
-B:\workgit\streamgate\
-├── cmd\
-│   └── streamgate\
-│       └── main.go                 # Gateway daemon entrypoint, CLI flags, graceful shutdown
-├── internal\
-│   ├── config\
-│   │   └── config.go               # Configuration (ports, buffer sizes, JWT secret, CORS)
-│   ├── api\
-│   │   ├── router.go               # HTTP route setup, CORS middleware, gzip negotiation
-│   │   ├── publish.go              # POST /api/v1/publish handler
-│   │   ├── subscribe.go            # GET /v1/subscribe/:channel SSE stream handler
-│   │   ├── channels.go             # Channel listing and subscriber telemetry endpoints
-│   │   └── auth.go                 # JWT validation and channel permission checks
-│   ├── hub\
-│   │   ├── hub.go                  # Master channel manager and sharded registry
-│   │   ├── channel.go              # Single channel state, subscriber list, and lock-striping
-│   │   ├── ringbuffer.go           # High-speed circular ring buffer for event replay
-│   │   └── client.go               # Client connection abstraction with backpressure handling
-│   ├── heartbeat\
-│   │   └── ping.go                 # Background keep-alive comment dispatcher (every 15s)
-│   └── telemetry\
-│       └── metrics.go              # Prometheus metrics (subscribers, msg/sec, drops, latency)
-├── web\
-│   ├── src\
-│   │   ├── components\
-│   │   │   ├── ChannelCard.tsx     # Channel overview card: active clients, throughput
-│   │   │   ├── LiveEventFeed.tsx   # Real-time streaming log of broadcast events
-│   │   │   ├── TestPublisher.tsx   # Interactive GUI to publish JSON events directly
-│   │   │   └── MetricsChart.tsx    # Live canvas chart of messages/sec and active sockets
-│   │   ├── App.tsx                 # Root streaming cockpit
-│   │   ├── main.tsx                # React 19 entrypoint
-│   │   └── index.css               # Tailwind CSS declarations
+streamgate/
+├── cmd/
+│   ├── streamgate/
+│   │   └── main.go                 # Daemon entrypoint, flags, config, signal handling
+│   └── streamgate-bench/
+│       └── main.go                 # High-concurrency load testing and benchmark CLI
+├── internal/
+│   ├── config/
+│   │   └── config.go               # Configuration parser (flags, env vars, defaults)
+│   ├── hub/
+│   │   ├── ringbuffer.go           # Fixed-capacity circular ring buffer for event replay
+│   │   ├── client.go               # Client connection abstraction with bounded write queue
+│   │   ├── channel.go              # Single channel state and subscriber lock-striping
+│   │   └── hub.go                  # Master channel manager, wildcard routing, global stats
+│   ├── auth/
+│   │   └── auth.go                 # API key and JWT channel permission verification
+│   ├── heartbeat/
+│   │   └── heartbeat.go            # Periodic keep-alive ping dispatcher
+│   ├── telemetry/
+│   │   └── metrics.go              # Prometheus metrics and real-time runtime statistics
+│   └── api/
+│       ├── router.go               # HTTP routing, CORS, security headers, web console serving
+│       ├── subscribe.go            # GET /v1/subscribe SSE handler with Last-Event-ID replay
+│       ├── publish.go              # POST /api/v1/publish single and batch ingestion
+│       └── channels.go             # REST API for channel introspection and statistics
+├── web/
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── OverviewGauges.tsx  # Active clients, throughput, memory, channel count
+│   │   │   ├── ChannelExplorer.tsx # Searchable, sortable channel cards with live stats
+│   │   │   ├── LiveEventFeed.tsx   # Streaming console of events flowing through channels
+│   │   │   ├── TestPublisher.tsx   # Interactive JSON event publisher with validation
+│   │   │   └── ReplayTester.tsx    # Interactive Last-Event-ID reconnection tester
+│   │   ├── types.ts                # TypeScript interfaces for events and metrics
+│   │   ├── App.tsx                 # Root operations dashboard
+│   │   ├── main.tsx                # React 19 bootstrap
+│   │   └── index.css               # Dark theme Tailwind styling
 │   ├── package.json
 │   ├── tsconfig.json
 │   └── vite.config.ts
-├── Makefile                        # Multi-platform compilation and benchmark suites
-├── Dockerfile                      # Scratch container image (< 20MB)
-├── README.md                       # Comprehensive documentation and integration guide
-└── MASTER_PLAN.md                  # This master specification
+├── examples/
+│   ├── browser.html                # Native browser EventSource demo
+│   ├── node-publisher.js           # Node.js event publisher script
+│   └── python-publisher.py         # Python event publisher script
+├── Dockerfile                      # Multi-stage production container
+├── docker-compose.yml              # Local testing with publisher service
+├── Makefile                        # Build, test, lint, and benchmark automation
+├── .gitignore
+├── LICENSE
+├── README.md
+└── MASTER_PLAN.md
 ```
 
 ---
 
-## 5. API Specification & Client Integration
+## 4. API and Protocol Specifications
 
-### 1. Publishing an Event (Backend to `streamgate`)
+### 4.1 Server-Sent Events Subscription
+- **Path**: `GET /v1/subscribe` or `GET /v1/subscribe/channels/{channel}`
+- **Query Parameters**:
+  - `channel`: Comma-separated list of channel names (e.g. `crypto,stocks.btc,chat.general`).
+  - `token`: Optional JWT token for private channel authorization.
+  - `last_event_id`: Optional event ID to replay missed events (alternative to HTTP header).
+- **HTTP Headers**:
+  - `Last-Event-ID`: Previous event ID for replay recovery.
+  - `Authorization: Bearer <jwt>`: Alternative way to pass authorization token.
+- **Response**: `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`.
 
-```bash
-POST /api/v1/publish/channels/finance-trades
-Authorization: Bearer <publish_secret_key>
-Content-Type: application/json
-
+### 4.2 Event Publication
+- **Path**: `POST /api/v1/publish` or `POST /api/v1/publish/channels/{channel}`
+- **Headers**: `Authorization: Bearer <publish_secret_key>`, `Content-Type: application/json`
+- **Single Event Payload**:
+```json
 {
+  "channel": "finance-trades",
   "event": "trade.executed",
   "data": {
     "symbol": "BTC/USD",
@@ -144,51 +170,58 @@ Content-Type: application/json
   }
 }
 ```
-
-### 2. Subscribing to an Event Stream (Browser to `streamgate`)
-
-```javascript
-// Native browser EventSource with automatic reconnection
-const eventSource = new EventSource("https://stream.example.com/v1/subscribe/channels/finance-trades?token=eyJhbGciOi...");
-
-eventSource.addEventListener("trade.executed", (event) => {
-  const trade = JSON.parse(event.data);
-  console.log("New trade received:", trade);
-});
-
-eventSource.onerror = (err) => {
-  console.warn("Connection lost. Browser will auto-reconnect with Last-Event-ID header...");
-};
+- **Batch Publication**: `POST /api/v1/publish/batch`
+```json
+{
+  "events": [
+    { "channel": "chat.lobby", "event": "message", "data": { "text": "hello" } },
+    { "channel": "alerts", "event": "system", "data": { "level": "info" } }
+  ]
+}
 ```
+
+### 4.3 Channel Introspection and Health
+- `GET /api/v1/channels`: List active channels with subscriber counts and throughput.
+- `GET /api/v1/stats`: Gateway operational statistics (RAM, goroutines, messages/sec, total delivered).
+- `GET /metrics`: Standard Prometheus metrics.
+- `GET /healthz`: Health and readiness check.
 
 ---
 
-## 6. Implementation Roadmap
+## 5. Detailed Implementation Tasks
 
-### Phase 1: Core Fan-Out Engine & Ring Buffer
-- [ ] Initialize Go module `github.com/alexandrmotologa/streamgate`.
-- [ ] Implement `internal/hub/ringbuffer.go` (circular memory buffer with monotonic event IDs).
-- [ ] Implement `internal/hub/channel.go` with lock-striped subscriber maps.
-- [ ] Unit test concurrent broadcast under heavy load with zero race conditions (`go test -race`).
+### Phase 1: High-Performance Concurrency Core
+- [x] Task 1.1: Initialize Git repository, configure topics, and register with portfolio index.
+- [x] Task 1.2: Implement `internal/config` supporting command-line flags, environment variables, and safe defaults.
+- [x] Task 1.3: Implement `internal/hub/ringbuffer.go` featuring monotonic event ID tracking, bounded capacity, thread-safe appends, and zero-allocation slice replay.
+- [x] Task 1.4: Implement `internal/hub/client.go` with non-blocking write channels, backpressure handling, and graceful drop counters.
+- [x] Task 1.5: Implement `internal/hub/channel.go` with lock-striped subscriber storage.
+- [x] Task 1.6: Implement `internal/hub/hub.go` managing multi-channel subscription, wildcard prefix routing (`orders.*`), channel lifecycle, and metrics aggregation.
+- [x] Task 1.7: Write comprehensive concurrent unit tests verifying race freedom (`go test -race`).
 
-### Phase 2: HTTP SSE Server & Connection Lifecycle
-- [ ] Implement `internal/api/subscribe.go` with HTTP/2 and HTTP/1.1 SSE streaming.
-- [ ] Support `Last-Event-ID` header: replay missed events from ring buffer on reconnection.
-- [ ] Implement background keep-alive ping generator (`:keepalive\n\n` every 15 seconds).
-- [ ] Implement client backpressure detection (drop or disconnect slow clients before RAM exhausts).
+### Phase 2: HTTP SSE Streaming and Ingestion Engine
+- [x] Task 2.1: Implement `internal/heartbeat/heartbeat.go` for periodic `:ping` comments preventing proxy idle timeouts.
+- [x] Task 2.2: Implement `internal/auth/auth.go` verifying publish API keys and JWT subscriber signatures with wildcard channel claims.
+- [x] Task 2.3: Implement `internal/telemetry/metrics.go` exporting Prometheus metrics and internal gateway state snapshots.
+- [x] Task 2.4: Implement `internal/api/subscribe.go` handling HTTP/2 and HTTP/1.1 SSE client loops, Last-Event-ID recovery, and connection lifecycle events.
+- [x] Task 2.5: Implement `internal/api/publish.go` handling single and batch event ingestion with input validation.
+- [x] Task 2.6: Implement `internal/api/channels.go` for REST queries and channel introspection.
+- [x] Task 2.7: Implement `internal/api/router.go` wiring CORS, recovery, security headers, and request routing.
+- [x] Task 2.8: Write integration tests covering replay, heartbeat dispatch, and batch publication.
 
-### Phase 3: Ingestion API & Channel Authorization
-- [ ] Implement `internal/api/publish.go` supporting single and batch event publication.
-- [ ] Implement JWT token validation allowing fine-grained read/write channel wildcards (`chat.*`).
-- [ ] Implement Prometheus metrics exporter (`/metrics`).
+### Phase 3: Embedded React 19 Operations Cockpit
+- [x] Task 3.1: Scaffold Vite + React 19 + TypeScript frontend in `web/` with Tailwind CSS and Lucide icons.
+- [x] Task 3.2: Implement real-time SSE listener in the UI connecting to gateway telemetry.
+- [x] Task 3.3: Implement `OverviewGauges.tsx` displaying real-time memory usage, active connections, messages per second, and channel counts.
+- [x] Task 3.4: Implement `ChannelExplorer.tsx` with search, filtering, and channel detail cards.
+- [x] Task 3.5: Implement `LiveEventFeed.tsx` with pause/resume, channel filtering, and event inspector drawer.
+- [x] Task 3.6: Implement `TestPublisher.tsx` with interactive JSON payload composer and instant publish feedback.
+- [x] Task 3.7: Implement `ReplayTester.tsx` allowing developers to test `Last-Event-ID` recovery directly inside the browser.
+- [x] Task 3.8: Bundle frontend and wire into Go daemon using `//go:embed`.
 
-### Phase 4: Embedded React 19 Operations Cockpit
-- [ ] Scaffold Vite + React 19 frontend in `web/`.
-- [ ] Build live channel explorer showing real-time subscriber counts and bandwidth.
-- [ ] Build interactive test event publisher with syntax-highlighted JSON editor.
-- [ ] Embed static assets directly into the Go executable via `//go:embed`.
-
-### Phase 5: Production Hardening, Benchmarking & Documentation
-- [ ] Benchmark fan-out throughput (target: 50,000 connected clients with < 40MB RAM).
-- [ ] Write integration guide for React, Vue, Next.js, Python, and Node.js.
-- [ ] Release single-binary binaries for Linux, macOS, and Windows.
+### Phase 4: Benchmarking and Production Hardening
+- [x] Task 4.1: Implement `cmd/streamgate-bench` load generator capable of maintaining thousands of concurrent SSE connections and measuring fan-out latency percentiles.
+- [x] Task 4.2: Verify memory profile under 10,000+ simulated subscribers stays below 45MB RAM.
+- [x] Task 4.3: Implement multi-stage Dockerfile and docker-compose demo setup.
+- [x] Task 4.4: Author comprehensive humanized README and integration examples for Browser, Node.js, and Python.
+- [x] Task 4.5: Release automated verification scripts and verify clean end-to-end functionality.

@@ -1,15 +1,14 @@
-# Binaries
-bin/
-dist/
-streamgate
-streamgate.exe
-streamgate-bench
-streamgate-bench.exe
+# Compiled binaries
+/bin/
+/streamgate
+/streamgate.exe
+/streamgate-bench
+/streamgate-bench.exe
 
-# Web frontend dependencies & build
+# Web frontend dependencies & cache
 web/node_modules/
-web/dist/
 web/.vite/
+*.tsbuildinfo
 
 # Go build & test
 *.test
