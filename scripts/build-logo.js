@@ -1,0 +1,177 @@
+const fs = require('fs');
+const path = require('path');
+const { Resvg } = require('@resvg/resvg-js');
+
+function generateLogoSvg() {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="squircle-clip">
+      <rect x="24" y="24" width="976" height="976" rx="220" />
+    </clipPath>
+
+    <!-- Linear Gradients for Obsidian Facets -->
+    <linearGradient id="facet-light" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+
+    <linearGradient id="facet-mid" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+
+    <linearGradient id="facet-dark" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+
+    <linearGradient id="facet-deep" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#090d16"/>
+    </linearGradient>
+
+    <!-- Electric Cyan Pulse Gradient -->
+    <linearGradient id="cyan-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f5ff"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+
+    <linearGradient id="cyan-accent" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+
+    <filter id="shadow-deep" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.16" />
+    </filter>
+  </defs>
+
+  <!-- Luxury White Squircle Container -->
+  <rect x="24" y="24" width="976" height="976" rx="220" fill="#ffffff" stroke="#e2e8f0" stroke-width="6" />
+
+  <g clip-path="url(#squircle-clip)">
+    <g transform="translate(512, 512)" filter="url(#shadow-deep)">
+
+      <!-- Hexagonal Architectural Gateway -->
+      <polygon points="
+        0,-390
+        338,-195
+        338,195
+        0,390
+        -338,195
+        -338,-195
+      " fill="none" stroke="#0f172a" stroke-width="38" stroke-linejoin="round" />
+
+      <!-- Inner High-Tech Telemetry Dashed Hexagon -->
+      <polygon points="
+        0,-355
+        307,-177
+        307,177
+        0,355
+        -307,177
+        -307,-177
+      " fill="none" stroke="#00f5ff" stroke-width="4" opacity="0.45" stroke-dasharray="16, 12" />
+
+      <!-- Corner Telemetry Calibration Crosses -->
+      <line x1="-315" y1="0" x2="-295" y2="0" stroke="#00f5ff" stroke-width="2" opacity="0.5" />
+      <line x1="295" y1="0" x2="315" y2="0" stroke="#00f5ff" stroke-width="2" opacity="0.5" />
+
+      <!-- WATERTIGHT SOLID SILHOUETTE BASE -->
+      <path d="
+        M 0,-215
+        L -48,-265 L -80,-252 L -98,-205 L -140,-125
+        L -290,-40 L -285,25 L -235,75 L -165,115 L -95,152 L -35,178
+        L -12,225 L -4,340 L 4,340 L 12,225
+        L 35,178 L 95,152 L 165,115 L 235,75 L 285,25 L 290,-40
+        L 140,-125 L 98,-205 L 80,-252 L 48,-265
+        Z
+      " fill="#090d16" />
+
+      <!-- LEFT WING OUTER FACETS -->
+      <polygon points="0,-140 -140,-125 -290,-40 -185,-30" fill="url(#facet-mid)" />
+      <polygon points="-185,-30 -290,-40 -285,25 -215,35" fill="url(#facet-dark)" />
+      <polygon points="-215,35 -285,25 -235,75 -165,70" fill="url(#facet-deep)" />
+      <polygon points="-165,70 -235,75 -165,115 -115,105" fill="url(#facet-dark)" />
+
+      <!-- RIGHT WING OUTER FACETS -->
+      <polygon points="0,-140 140,-125 290,-40 185,-30" fill="url(#facet-light)" />
+      <polygon points="185,-30 290,-40 285,25 215,35" fill="url(#facet-mid)" />
+      <polygon points="215,35 285,25 235,75 165,70" fill="url(#facet-dark)" />
+      <polygon points="165,70 235,75 165,115 115,105" fill="url(#facet-mid)" />
+
+      <!-- LEFT INNER MID-WING STREAM CHANNELS -->
+      <polygon points="0,-75 -185,-30 -215,35 -90,0" fill="url(#facet-light)" />
+      <polygon points="-90,0 -215,35 -165,70 -75,45" fill="url(#facet-mid)" />
+      <polygon points="-75,45 -165,70 -165,115 -60,85" fill="url(#facet-deep)" />
+      <polygon points="-60,85 -165,115 -95,152 -35,120" fill="url(#facet-dark)" />
+      <polygon points="-35,120 -95,152 -35,178 0,150" fill="url(#facet-deep)" />
+
+      <!-- RIGHT INNER MID-WING STREAM CHANNELS -->
+      <polygon points="0,-75 185,-30 215,35 90,0" fill="url(#facet-mid)" />
+      <polygon points="90,0 215,35 165,70 75,45" fill="url(#facet-dark)" />
+      <polygon points="75,45 165,70 165,115 60,85" fill="url(#facet-mid)" />
+      <polygon points="60,85 165,115 95,152 35,120" fill="url(#facet-light)" />
+      <polygon points="35,120 95,152 35,178 0,150" fill="url(#facet-dark)" />
+
+      <!-- ELECTRIC CYAN STREAM-LINE FACETS -->
+      <polygon points="-90,0 -185,-30 -140,-25 -70,5" fill="url(#cyan-glow)" opacity="0.85" />
+      <polygon points="90,0 185,-30 140,-25 70,5" fill="url(#cyan-glow)" opacity="0.85" />
+      <polygon points="-75,45 -140,50 -115,65 -50,60" fill="url(#cyan-accent)" opacity="0.6" />
+      <polygon points="75,45 140,50 115,65 50,60" fill="url(#cyan-accent)" opacity="0.6" />
+
+      <!-- CENTRAL DORSAL SPINE PLATES -->
+      <polygon points="0,-165 -55,-105 0,-45 55,-105" fill="url(#facet-light)" />
+      <polygon points="0,-165 -55,-105 0,-45" fill="url(#facet-mid)" />
+
+      <!-- Center Telemetry Core Diamond -->
+      <polygon points="0,-45 -45,15 0,75 45,15" fill="url(#facet-dark)" />
+      <polygon points="0,-35 -30,15 0,65 30,15" fill="#090d16" />
+      <polygon points="0,-20 -15,15 0,50 15,15" fill="url(#cyan-glow)" />
+
+      <!-- Lower Caudal Spine Plate -->
+      <polygon points="0,75 -35,115 0,155 35,115" fill="url(#facet-mid)" />
+      <polygon points="0,75 -35,115 0,155" fill="url(#facet-dark)" />
+      <polygon points="0,155 -25,185 0,215 25,185" fill="url(#facet-deep)" />
+
+      <!-- CEPHALIC LOBES (Head Horns) -->
+      <polygon points="0,-215 -48,-265 -80,-252 -60,-200" fill="url(#facet-light)" />
+      <polygon points="0,-215 -60,-200 -55,-165 0,-165" fill="url(#facet-mid)" />
+      <polygon points="-80,-252 -98,-205 -60,-200" fill="url(#facet-dark)" />
+      <polygon points="-98,-205 -140,-125 -55,-165 -60,-200" fill="url(#facet-deep)" />
+
+      <polygon points="0,-215 48,-265 80,-252 60,-200" fill="url(#facet-mid)" />
+      <polygon points="0,-215 60,-200 55,-165 0,-165" fill="url(#facet-light)" />
+      <polygon points="80,-252 98,-205 60,-200" fill="url(#facet-light)" />
+      <polygon points="98,-205 140,-125 55,-165 60,-200" fill="url(#facet-mid)" />
+
+      <!-- PREDATORY ALMOND OPTICS -->
+      <polygon points="-90,-190 -120,-165 -82,-168" fill="#090d16" />
+      <polygon points="-88,-185 -115,-166 -85,-170" fill="url(#cyan-glow)" />
+
+      <polygon points="90,-190 120,-165 82,-168" fill="#090d16" />
+      <polygon points="88,-185 115,-166 85,-170" fill="url(#cyan-glow)" />
+
+      <!-- WHIP TAIL -->
+      <polygon points="0,215 -8,255 0,340 8,255" fill="url(#facet-dark)" />
+      <polygon points="0,215 0,340 8,255" fill="url(#facet-mid)" />
+      <polygon points="0,250 -14,265 0,280 14,265" fill="url(#cyan-glow)" opacity="0.7" />
+
+    </g>
+  </g>
+</svg>`;
+}
+
+const docsImagesDir = path.join(__dirname, '..', 'docs', 'images');
+const svgPath = path.join(docsImagesDir, 'logo.svg');
+const pngPath = path.join(docsImagesDir, 'logo.png');
+
+const svg = generateLogoSvg();
+fs.writeFileSync(svgPath, svg, 'utf8');
+console.log('✓ Wrote logo.svg');
+
+const resvg = new Resvg(svg, {
+  fitTo: { mode: 'width', value: 1024 }
+});
+const pngBuffer = resvg.render().asPng();
+fs.writeFileSync(pngPath, pngBuffer);
+console.log('✓ Successfully rendered logo.png at 1024x1024 (' + pngBuffer.length + ' bytes)');

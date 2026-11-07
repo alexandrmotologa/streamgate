@@ -1,8 +1,78 @@
-# streamgate
+<p align="center">
+  <a href="https://github.com/alexandrmotologa/streamgate">
+    <img src="docs/images/logo.png?raw=true" alt="streamgate Logo" width="130" style="border-radius: 24px;" />
+  </a>
+</p>
 
-High-throughput HTTP Server-Sent Events multiplexer and fan-out broadcast gateway written in Go with an embedded React 19 operations cockpit.
+<h1 align="center">streamgate</h1>
+
+<p align="center">
+  <strong>High-Throughput HTTP Server-Sent Events (SSE) Multiplexer and Fan-Out Broadcast Gateway</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go Version" />
+  <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 19" />
+  <img src="https://img.shields.io/badge/RAM_Budget-%3C_45_MB-10b981?style=flat-square" alt="Memory Target" />
+  <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="License" />
+</p>
+
+<p align="center">
+  <img src="docs/images/streamgate_demo.gif?raw=true" alt="streamgate Operations Cockpit Demo" width="100%" style="border-radius: 12px; border: 1px solid #334155;" />
+</p>
 
 streamgate distributes real-time events to concurrent subscribers over HTTP/2 and HTTP/1.1 from a single backend HTTP POST request. It includes per-channel in-memory circular ring buffers for automatic `Last-Event-ID` reconnection recovery, lock-striped subscriber tables, presence member tracking, channel lifecycle webhooks, adaptive stream compression, Redis pub/sub clustering, and an operations dashboard running in less than 45MB of RAM.
+
+---
+
+## Operations Cockpit & Visual Tour
+
+streamgate includes an embedded single-page operations dashboard built in React 19, TypeScript, and Tailwind CSS. The cockpit communicates with the Go gateway over its own real-time SSE stream and management endpoints.
+
+<table width="100%">
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Real-Time Overview & Metrics Gauges</strong><br />
+      Live subscriber counters, message delivery rates, memory allocation budget tracker, and channel topology.
+      <br /><br />
+      <img src="docs/images/streamgate_overview.png?raw=true" alt="Overview Gauges" width="100%" style="border-radius: 8px; border: 1px solid #334155;" />
+    </td>
+    <td width="50%" valign="top">
+      <strong>Live Event Stream Inspector</strong><br />
+      Live streaming feed with sub-millisecond arrival stamps, search filtering, and JSON payload inspection drawer.
+      <br /><br />
+      <img src="docs/images/streamgate_live_feed.png?raw=true" alt="Live Event Stream Inspector" width="100%" style="border-radius: 8px; border: 1px solid #334155;" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Interactive Test Publisher</strong><br />
+      Send mock events with one-click presets (trades, AI tokens, health alerts, chat) and immediate fan-out delivery verification.
+      <br /><br />
+      <img src="docs/images/streamgate_publisher.png?raw=true" alt="Test Publisher" width="100%" style="border-radius: 8px; border: 1px solid #334155;" />
+    </td>
+    <td width="50%" valign="top">
+      <strong>Presence Members Modal</strong><br />
+      Track active subscribers, user identifiers, custom JSON metadata, and join timestamps across presence channels.
+      <br /><br />
+      <img src="docs/images/streamgate_presence.png?raw=true" alt="Presence Members Modal" width="100%" style="border-radius: 8px; border: 1px solid #334155;" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>JWT Token Generator</strong><br />
+      Generate and test subscriber authentication tokens directly in the cockpit using standard HMAC-SHA256 signatures.
+      <br /><br />
+      <img src="docs/images/streamgate_jwt.png?raw=true" alt="JWT Token Generator" width="100%" style="border-radius: 8px; border: 1px solid #334155;" />
+    </td>
+    <td width="50%" valign="top">
+      <strong>Mobile Responsive Cockpit Layout</strong><br />
+      Full operational capabilities adapted for mobile and tablet screens, from quick triage to subscriber monitoring.
+      <br /><br />
+      <img src="docs/images/streamgate_mobile.png?raw=true" alt="Mobile Cockpit Layout" width="100%" style="border-radius: 8px; border: 1px solid #334155;" />
+    </td>
+  </tr>
+</table>
 
 ---
 
