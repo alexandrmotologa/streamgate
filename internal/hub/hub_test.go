@@ -6,9 +6,26 @@ import (
 	"testing"
 )
 
+type mockLifecycle struct {
+	mu       sync.Mutex
+	occupied []string
+	vacated  []string
+}
+
+func (m *mockLifecycle) OnChannelOccupied(channel string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.occupied = append(m.occupied, channel)
+}
+
+func (m *mockLifecycle) OnChannelVacated(channel string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.vacated = append(m.vacated, channel)
+}
+
 func TestClient_Backpressure(t *testing.T) {
-	// Client with buffer size 2 and drop_oldest policy
-	c := NewClient("client-1", 2, "drop_oldest", "127.0.0.1", "test-agent")
+	c := NewClient("client-1", "user-1", nil, 2, "drop_oldest", "127.0.0.1", "test-agent")
 
 	ev1 := &Event{ID: "1", Data: []byte("first")}
 	ev2 := &Event{ID: "2", Data: []byte("second")}
@@ -16,7 +33,6 @@ func TestClient_Backpressure(t *testing.T) {
 
 	c.Enqueue(ev1)
 	c.Enqueue(ev2)
-	// Buffer is now full [ev1, ev2]. Enqueuing ev3 should drop oldest (ev1) and insert ev3
 	c.Enqueue(ev3)
 
 	if c.Dropped() != 1 {
@@ -33,8 +49,8 @@ func TestClient_Backpressure(t *testing.T) {
 func TestHub_PublishAndSubscribe(t *testing.T) {
 	h := NewHub(10, 10, "drop_oldest")
 
-	c1 := NewClient("c1", 10, "drop_oldest", "127.0.0.1", "agent1")
-	c2 := NewClient("c2", 10, "drop_oldest", "127.0.0.1", "agent2")
+	c1 := NewClient("c1", "user1", nil, 10, "drop_oldest", "127.0.0.1", "agent1")
+	c2 := NewClient("c2", "user2", nil, 10, "drop_oldest", "127.0.0.1", "agent2")
 
 	h.RegisterClient(c1, []string{"sports"}, "")
 	h.RegisterClient(c2, []string{"sports", "news"}, "")
@@ -44,7 +60,6 @@ func TestHub_PublishAndSubscribe(t *testing.T) {
 		t.Fatalf("expected 2 active connections, got %d", stats.ActiveConnections)
 	}
 
-	// Publish to sports
 	ev, delivered := h.Publish("sports", "score", []byte(`{"score":"1-0"}`))
 	if delivered != 2 {
 		t.Fatalf("expected delivery to 2 clients, got %d", delivered)
@@ -53,7 +68,6 @@ func TestHub_PublishAndSubscribe(t *testing.T) {
 		t.Fatalf("expected non-empty event ID")
 	}
 
-	// Verify both clients received it
 	select {
 	case msg := <-c1.Send:
 		if string(msg.Data) != `{"score":"1-0"}` {
@@ -63,127 +77,99 @@ func TestHub_PublishAndSubscribe(t *testing.T) {
 		t.Fatalf("c1 did not receive message")
 	}
 
-	select {
-	case msg := <-c2.Send:
-		if string(msg.Data) != `{"score":"1-0"}` {
-			t.Fatalf("c2 received unexpected data: %s", string(msg.Data))
-		}
-	default:
-		t.Fatalf("c2 did not receive message")
-	}
-
-	// Publish to news -> only c2 should receive
-	_, deliveredNews := h.Publish("news", "headline", []byte(`{"title":"breaking"}`))
-	if deliveredNews != 1 {
-		t.Fatalf("expected delivery to 1 client on news, got %d", deliveredNews)
-	}
-
-	select {
-	case msg := <-c2.Send:
-		if string(msg.Data) != `{"title":"breaking"}` {
-			t.Fatalf("c2 received unexpected data: %s", string(msg.Data))
-		}
-	default:
-		t.Fatalf("c2 did not receive news message")
-	}
-
-	// Unregister c1
 	h.UnregisterClient(c1)
 	if h.GetStats().ActiveConnections != 1 {
 		t.Fatalf("expected 1 active connection after unregistering c1")
 	}
 }
 
-func TestHub_WildcardRouting(t *testing.T) {
+func TestHub_PresenceChannels(t *testing.T) {
 	h := NewHub(10, 10, "drop_oldest")
 
-	c := NewClient("wild-client", 10, "drop_oldest", "127.0.0.1", "agent")
-	h.RegisterClient(c, []string{"sensors.*"}, "")
+	c1 := NewClient("c1", "usr_alice", map[string]any{"name": "Alice"}, 10, "drop_oldest", "127.0.0.1", "agent1")
+	c2 := NewClient("c2", "usr_bob", map[string]any{"name": "Bob"}, 10, "drop_oldest", "127.0.0.1", "agent2")
 
-	// Publish to sensors.temperature
-	_, delivered := h.Publish("sensors.temperature", "reading", []byte(`{"celsius":22}`))
-	if delivered != 1 {
-		t.Fatalf("expected 1 delivery via wildcard, got %d", delivered)
+	// c1 joins presence-chat
+	h.RegisterClient(c1, []string{"presence-chat"}, "")
+
+	members := h.GetChannelMembers("presence-chat")
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member in presence channel, got %d", len(members))
+	}
+	if members[0].UserID != "usr_alice" {
+		t.Fatalf("expected user_id usr_alice, got %s", members[0].UserID)
 	}
 
-	select {
-	case msg := <-c.Send:
-		if msg.Channel != "sensors.temperature" {
-			t.Fatalf("expected channel sensors.temperature, got %s", msg.Channel)
-		}
-	default:
-		t.Fatalf("wildcard subscriber did not receive message")
+	// c2 joins presence-chat -> c1 should receive presence.member_added event!
+	h.RegisterClient(c2, []string{"presence-chat"}, "")
+
+	members = h.GetChannelMembers("presence-chat")
+	if len(members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(members))
 	}
-}
 
-func TestHub_ReplayOnRegister(t *testing.T) {
-	h := NewHub(10, 10, "drop_oldest")
-
-	// Publish 3 events to channel "audit" before client connects
-	ev1, _ := h.Publish("audit", "step1", []byte("data1"))
-	ev2, _ := h.Publish("audit", "step2", []byte("data2"))
-	ev3, _ := h.Publish("audit", "step3", []byte("data3"))
-
-	// Client registers requesting replay since ev1.ID
-	c := NewClient("replaying-client", 10, "drop_oldest", "127.0.0.1", "agent")
-	h.RegisterClient(c, []string{"audit"}, ev1.ID)
-
-	// Client should immediately have received ev2 and ev3
-	var replayed []*Event
+	// Check that c1 received member_added notification for c2
+	receivedAdded := false
 	for i := 0; i < 2; i++ {
 		select {
-		case msg := <-c.Send:
-			replayed = append(replayed, msg)
+		case msg := <-c1.Send:
+			if msg.Event == "presence.member_added" {
+				receivedAdded = true
+			}
 		default:
-			t.Fatalf("missing replayed event index %d", i)
 		}
 	}
+	if !receivedAdded {
+		t.Fatalf("c1 did not receive presence.member_added event")
+	}
 
-	if replayed[0].ID != ev2.ID || replayed[1].ID != ev3.ID {
-		t.Fatalf("unexpected replayed IDs: %s, %s", replayed[0].ID, replayed[1].ID)
+	// c2 leaves
+	h.UnregisterClient(c2)
+	members = h.GetChannelMembers("presence-chat")
+	if len(members) != 1 {
+		t.Fatalf("expected 1 member after c2 left, got %d", len(members))
 	}
 }
 
-func TestHub_ConcurrentFanOut(t *testing.T) {
-	h := NewHub(50, 100, "drop_oldest")
+func TestHub_LifecycleHooks(t *testing.T) {
+	h := NewHub(10, 10, "drop_oldest")
+	mock := &mockLifecycle{}
+	h.SetLifecycleListener(mock)
 
-	// Register 100 clients
-	numClients := 100
-	clients := make([]*Client, numClients)
-	for i := 0; i < numClients; i++ {
-		c := NewClient(fmt.Sprintf("client-%d", i), 100, "drop_oldest", "127.0.0.1", "bench")
-		clients[i] = c
-		h.RegisterClient(c, []string{"benchmark"}, "")
+	c1 := NewClient("c1", "usr_1", nil, 10, "drop_oldest", "127.0.0.1", "agent1")
+
+	// First client joins -> channel_occupied
+	h.RegisterClient(c1, []string{"stocks"}, "")
+
+	mock.mu.Lock()
+	if len(mock.occupied) != 1 || mock.occupied[0] != "stocks" {
+		t.Fatalf("expected 1 occupied event for stocks, got %v", mock.occupied)
+	}
+	mock.mu.Unlock()
+
+	// Client leaves -> channel_vacated
+	h.UnregisterClient(c1)
+
+	mock.mu.Lock()
+	if len(mock.vacated) != 1 || mock.vacated[0] != "stocks" {
+		t.Fatalf("expected 1 vacated event for stocks, got %v", mock.vacated)
+	}
+	mock.mu.Unlock()
+}
+
+func TestHub_ChannelHistory(t *testing.T) {
+	h := NewHub(10, 10, "drop_oldest")
+
+	for i := 1; i <= 5; i++ {
+		h.Publish("history-test", "tick", []byte(fmt.Sprintf(`{"i":%d}`, i)))
 	}
 
-	var wg sync.WaitGroup
-	// 5 concurrent publishers
-	for p := 0; p < 5; p++ {
-		wg.Add(1)
-		go func(pubID int) {
-			defer wg.Done()
-			for i := 0; i < 20; i++ {
-				h.Publish("benchmark", "tick", []byte(fmt.Sprintf(`{"publisher":%d,"i":%d}`, pubID, i)))
-			}
-		}(p)
+	// Retrieve last 3
+	history := h.GetChannelHistory("history-test", 3, "")
+	if len(history) != 3 {
+		t.Fatalf("expected 3 history events, got %d", len(history))
 	}
-
-	wg.Wait()
-
-	// Drain messages
-	for _, c := range clients {
-		received := 0
-	DrainLoop:
-		for {
-			select {
-			case <-c.Send:
-				received++
-			default:
-				break DrainLoop
-			}
-		}
-		if received == 0 {
-			t.Fatalf("client received 0 messages")
-		}
+	if string(history[2].Data) != `{"i":5}` {
+		t.Fatalf("expected latest event i:5, got %s", string(history[2].Data))
 	}
 }

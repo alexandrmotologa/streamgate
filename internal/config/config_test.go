@@ -20,8 +20,14 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.HeartbeatInterval != 15*time.Second {
 		t.Errorf("expected heartbeat 15s, got %v", cfg.HeartbeatInterval)
 	}
+	if cfg.RetryInterval != 3*time.Second {
+		t.Errorf("expected retry interval 3s, got %v", cfg.RetryInterval)
+	}
 	if !cfg.EnableWebUI {
 		t.Errorf("expected EnableWebUI true")
+	}
+	if !cfg.EnableCompression {
+		t.Errorf("expected EnableCompression true")
 	}
 }
 
@@ -33,8 +39,13 @@ func TestConfigLoadWithFlags(t *testing.T) {
 		"-ring-size", "2048",
 		"-client-buffer", "512",
 		"-heartbeat", "30",
+		"-retry-interval", "5",
 		"-web-ui=false",
 		"-drop-policy", "disconnect",
+		"-webhook-url", "http://internal/hook",
+		"-webhook-secret", "hook-key",
+		"-compression=false",
+		"-redis-addr", "127.0.0.1:6379",
 	}
 
 	cfg, err := Load(args)
@@ -60,20 +71,34 @@ func TestConfigLoadWithFlags(t *testing.T) {
 	if cfg.HeartbeatInterval != 30*time.Second {
 		t.Errorf("expected heartbeat 30s, got %v", cfg.HeartbeatInterval)
 	}
+	if cfg.RetryInterval != 5*time.Second {
+		t.Errorf("expected retry-interval 5s, got %v", cfg.RetryInterval)
+	}
 	if cfg.EnableWebUI {
 		t.Errorf("expected EnableWebUI false")
 	}
 	if cfg.DropPolicy != "disconnect" {
 		t.Errorf("expected drop-policy disconnect, got %s", cfg.DropPolicy)
 	}
+	if cfg.WebhookURL != "http://internal/hook" {
+		t.Errorf("expected webhook-url http://internal/hook, got %s", cfg.WebhookURL)
+	}
+	if cfg.EnableCompression {
+		t.Errorf("expected compression false")
+	}
+	if cfg.RedisAddr != "127.0.0.1:6379" {
+		t.Errorf("expected redis-addr 127.0.0.1:6379, got %s", cfg.RedisAddr)
+	}
 }
 
 func TestConfigLoadWithEnv(t *testing.T) {
 	os.Setenv("STREAMGATE_PORT", "7777")
 	os.Setenv("STREAMGATE_API_KEY", "env-secret")
+	os.Setenv("STREAMGATE_WEBHOOK_URL", "http://env-hook")
 	defer func() {
 		os.Unsetenv("STREAMGATE_PORT")
 		os.Unsetenv("STREAMGATE_API_KEY")
+		os.Unsetenv("STREAMGATE_WEBHOOK_URL")
 	}()
 
 	cfg, err := Load([]string{})
@@ -86,5 +111,8 @@ func TestConfigLoadWithEnv(t *testing.T) {
 	}
 	if cfg.PublishAPIKey != "env-secret" {
 		t.Errorf("expected api-key env-secret, got %s", cfg.PublishAPIKey)
+	}
+	if cfg.WebhookURL != "http://env-hook" {
+		t.Errorf("expected webhook-url from env, got %s", cfg.WebhookURL)
 	}
 }

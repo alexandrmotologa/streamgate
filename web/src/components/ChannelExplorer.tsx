@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Search, Radio, Send, RefreshCw, Database } from 'lucide-react';
-import { ChannelInfo } from '../types';
+import { Search, Radio, Send, RefreshCw, Database, Users, History, X } from 'lucide-react';
+import { ChannelInfo, PresenceMember } from '../types';
 
 interface Props {
   channels: ChannelInfo[];
@@ -16,10 +16,49 @@ export const ChannelExplorer: React.FC<Props> = ({
   onRefresh,
 }) => {
   const [search, setSearch] = useState('');
+  const [historyModalChannel, setHistoryModalChannel] = useState<string | null>(null);
+  const [historyEvents, setHistoryEvents] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  const [membersModalChannel, setMembersModalChannel] = useState<string | null>(null);
+  const [presenceMembers, setPresenceMembers] = useState<PresenceMember[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
 
   const filtered = channels.filter(ch =>
     ch.name.toLowerCase().includes(search.toLowerCase())
   );
+
+  const openHistory = async (chName: string) => {
+    setHistoryModalChannel(chName);
+    setLoadingHistory(true);
+    try {
+      const res = await fetch(`/api/v1/channels/${encodeURIComponent(chName)}/history?limit=30`);
+      if (res.ok) {
+        const data = await res.json();
+        setHistoryEvents(data.events || []);
+      }
+    } catch {
+      setHistoryEvents([]);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const openMembers = async (chName: string) => {
+    setMembersModalChannel(chName);
+    setLoadingMembers(true);
+    try {
+      const res = await fetch(`/api/v1/channels/${encodeURIComponent(chName)}/members`);
+      if (res.ok) {
+        const data = await res.json();
+        setPresenceMembers(data.members || []);
+      }
+    } catch {
+      setPresenceMembers([]);
+    } finally {
+      setLoadingMembers(false);
+    }
+  };
 
   return (
     <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-5 backdrop-blur">
@@ -32,7 +71,7 @@ export const ChannelExplorer: React.FC<Props> = ({
             </span>
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Real-time subscriber maps, ring buffer replay windows, and fan-out totals.
+            Real-time subscriber maps, ring buffer replay windows, and presence state.
           </p>
         </div>
 
@@ -71,6 +110,7 @@ export const ChannelExplorer: React.FC<Props> = ({
           {filtered.map(ch => {
             const bufferPercent = Math.round((ch.buffer_size / Math.max(1, ch.buffer_capacity)) * 100);
             const isSystem = ch.name.startsWith('_streamgate');
+            const isPresence = ch.is_presence || ch.name.startsWith('presence-');
 
             return (
               <div
@@ -83,11 +123,22 @@ export const ChannelExplorer: React.FC<Props> = ({
                       <span className="font-mono text-sm font-semibold text-white truncate block">
                         {ch.name}
                       </span>
-                      {isSystem && (
-                        <span className="inline-block mt-0.5 text-[10px] font-mono uppercase tracking-wider bg-indigo-500/10 text-indigo-400 px-1.5 py-0.2 rounded">
-                          System Metric Stream
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5 mt-1">
+                        {isSystem && (
+                          <span className="text-[10px] font-mono uppercase tracking-wider bg-indigo-500/10 text-indigo-400 px-1.5 py-0.2 rounded">
+                            System
+                          </span>
+                        )}
+                        {isPresence && (
+                          <button
+                            onClick={() => openMembers(ch.name)}
+                            className="text-[10px] font-mono uppercase tracking-wider bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 px-1.5 py-0.2 rounded flex items-center gap-1 transition"
+                          >
+                            <Users className="w-3 h-3" />
+                            <span>{ch.member_count ?? 0} online</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center gap-1.5 bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full text-xs font-mono font-medium flex-shrink-0">
                       <Radio className="w-3 h-3" />
@@ -109,10 +160,14 @@ export const ChannelExplorer: React.FC<Props> = ({
                   {/* Ring buffer occupancy */}
                   <div className="mt-3">
                     <div className="flex justify-between text-[11px] text-slate-400 mb-1">
-                      <span className="flex items-center gap-1">
+                      <button
+                        onClick={() => openHistory(ch.name)}
+                        className="flex items-center gap-1 hover:text-white transition"
+                      >
                         <Database className="w-3 h-3 text-slate-400" />
-                        <span>Replay Buffer</span>
-                      </span>
+                        <span>Replay Buffer ({ch.buffer_size})</span>
+                        <History className="w-3 h-3 text-sky-400 ml-0.5" />
+                      </button>
                       <span className="font-mono">{ch.buffer_size} / {ch.buffer_capacity}</span>
                     </div>
                     <div className="w-full bg-slate-900 rounded-full h-1 overflow-hidden">
@@ -143,6 +198,92 @@ export const ChannelExplorer: React.FC<Props> = ({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* History Modal */}
+      {historyModalChannel && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-xl w-full p-6 shadow-2xl relative">
+            <button
+              onClick={() => setHistoryModalChannel(null)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2 mb-1">
+              <History className="w-5 h-5 text-sky-400" />
+              <h3 className="text-base font-semibold text-white">
+                Channel History: #{historyModalChannel}
+              </h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-4 font-mono">
+              GET /api/v1/channels/{historyModalChannel}/history
+            </p>
+
+            <div className="max-h-80 overflow-y-auto space-y-2 font-mono text-xs">
+              {loadingHistory ? (
+                <div className="py-8 text-center text-slate-400">Loading history...</div>
+              ) : historyEvents.length === 0 ? (
+                <div className="py-8 text-center text-slate-400">No events currently in ring buffer</div>
+              ) : (
+                historyEvents.map((ev, i) => (
+                  <div key={i} className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg">
+                    <div className="flex items-center justify-between text-slate-400 text-[10px] mb-1">
+                      <span className="text-emerald-400">{ev.id}</span>
+                      <span className="text-purple-400 font-semibold">[{ev.event}]</span>
+                    </div>
+                    <pre className="text-slate-200 text-[11px] overflow-x-auto">
+                      {typeof ev.data === 'string' ? ev.data : JSON.stringify(ev.data, null, 2)}
+                    </pre>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Presence Members Modal */}
+      {membersModalChannel && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
+            <button
+              onClick={() => setMembersModalChannel(null)}
+              className="absolute right-4 top-4 text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-2 mb-1">
+              <Users className="w-5 h-5 text-purple-400" />
+              <h3 className="text-base font-semibold text-white">
+                Presence Members: #{membersModalChannel}
+              </h3>
+            </div>
+            <p className="text-xs text-slate-400 mb-4 font-mono">
+              Active connected sockets tracking member metadata.
+            </p>
+
+            <div className="max-h-80 overflow-y-auto space-y-2 font-mono text-xs">
+              {loadingMembers ? (
+                <div className="py-8 text-center text-slate-400">Loading presence state...</div>
+              ) : presenceMembers.length === 0 ? (
+                <div className="py-8 text-center text-slate-400">No active members connected</div>
+              ) : (
+                presenceMembers.map((m, i) => (
+                  <div key={i} className="p-3 bg-slate-950 border border-slate-800 rounded-lg flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold text-white text-xs">{m.user_id}</div>
+                      <div className="text-[10px] text-slate-400">Client: {m.client_id}</div>
+                    </div>
+                    <div className="text-right text-[11px] text-slate-300">
+                      {m.info ? JSON.stringify(m.info) : '{}'}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

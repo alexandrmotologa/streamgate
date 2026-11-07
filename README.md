@@ -2,7 +2,7 @@
 
 High-throughput HTTP Server-Sent Events multiplexer and fan-out broadcast gateway written in Go with an embedded React 19 operations cockpit.
 
-streamgate distributes real-time events to concurrent subscribers over HTTP/2 and HTTP/1.1 from a single backend HTTP POST request. It includes per-channel in-memory circular ring buffers for automatic `Last-Event-ID` reconnection recovery, lock-striped subscriber tables, periodic keep-alive comments, and an operations dashboard running in less than 45MB of RAM.
+streamgate distributes real-time events to concurrent subscribers over HTTP/2 and HTTP/1.1 from a single backend HTTP POST request. It includes per-channel in-memory circular ring buffers for automatic `Last-Event-ID` reconnection recovery, lock-striped subscriber tables, presence member tracking, channel lifecycle webhooks, adaptive stream compression, Redis pub/sub clustering, and an operations dashboard running in less than 45MB of RAM.
 
 ---
 
@@ -32,6 +32,8 @@ streamgate distributes real-time events to concurrent subscribers over HTTP/2 an
 │  │ 64-Stripe Sharded Subscriber Registry            │  │
 │  │ - Bounded non-blocking client write channels     │  │
 │  │ - Heartbeat comment generator (:keepalive)       │  │
+│  │ - Presence member tracker (presence-*)           │  │
+│  │ - Channel occupancy webhooks (occupied/vacated)  │  │
 │  └──────────────────────┬───────────────────────────┘  │
 │                         │                              │
 │         ┌───────────────┴───────────────┐              │
@@ -41,7 +43,12 @@ streamgate distributes real-time events to concurrent subscribers over HTTP/2 an
 │                                                        │
 │  ┌──────────────────────────────────────────────────┐  │
 │  │ Embedded React 19 Operations Cockpit             │  │
-│  │ Real-time channel inspector and test publisher   │  │
+│  │ Real-time channel inspector, JWT tool & publisher│  │
+│  └──────────────────────────────────────────────────┘  │
+│                         ▲                              │
+│                         │ Optional Backbone            │
+│  ┌──────────────────────┴───────────────────────────┐  │
+│  │ Distributed Redis / Valkey Pub/Sub Mesh          │  │
 │  └──────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────┘
 ```
@@ -52,8 +59,12 @@ streamgate distributes real-time events to concurrent subscribers over HTTP/2 an
 
 - **Zero-Allocation Fan-Out**: Ingested events are formatted into the Server-Sent Events frame specification (`id`, `event`, `data\n\n`) once upon receipt. The same byte slice is written directly to subscriber connections.
 - **Lock-Striped Subscriber Tables**: Subscribers within each channel are partitioned across 64 discrete mutex stripes. Broadcasting does not block incoming connections or subscriber teardown.
-- **Replay Buffers**: Each channel maintains an in-memory ring buffer. When a client reconnects after a network drop with `Last-Event-ID`, missed events are replayed before live events resume.
-- **Multi-Channel and Wildcard Routing**: Clients can subscribe to multiple comma-separated channels or wildcard patterns (`orders.*`).
+- **Presence Channels**: Channels prefixed with `presence-` track connected users, broadcasting `presence.member_added` and `presence.member_removed` events automatically with user metadata.
+- **Channel Lifecycle Webhooks**: Sends HTTP POST requests (`channel_occupied` and `channel_vacated`) with HMAC-SHA256 signatures to backends when subscriber counts transition between 0 and 1.
+- **Replay Buffers & REST History**: Each channel maintains an in-memory ring buffer. Missed events are replayed on reconnection with `Last-Event-ID`, or queried directly via `GET /api/v1/channels/{channel}/history`.
+- **Adaptive Stream Compression**: Supports gzip streaming compression with immediate frame-by-frame flushing.
+- **Multi-Channel & Wildcard Routing**: Clients can subscribe to multiple comma-separated channels or wildcard patterns (`orders.*`).
+- **Distributed Redis Clustering**: Connect multiple instances across a cluster via `-redis-addr` to distribute events across hundreds of thousands of connections.
 - **Backpressure Protection**: Each client connection uses a bounded channel buffer. If a client stalls, streamgate applies a configurable drop policy (`drop_oldest`, `drop_newest`, or `disconnect`) to prevent memory exhaustion.
 - **Low Memory Footprint**: Runs in 3MB to 35MB of RAM under thousands of concurrent connections.
 - **Single Static Executable**: The React 19 operations cockpit is embedded directly into the Go binary.
@@ -148,6 +159,7 @@ curl -N "http://localhost:8080/v1/subscribe?channel=finance-trades"
 Stream output:
 
 ```
+retry: 3000
 :connected client=sub-1730937600000-000001 channels=finance-trades
 
 id: 1730937600000-000001
@@ -157,57 +169,78 @@ data: {"symbol":"BTC/USD","price":94820.5,"volume":0.42}
 :keepalive
 ```
 
-### Multi-Channel and Wildcard Subscription
+### Presence Channels & Member Metadata
+
+Subscribe to a presence channel with `user_id` and optional JSON `info`:
 
 ```bash
-curl -N "http://localhost:8080/v1/subscribe?channel=orders.*,notifications,crypto"
+curl -N "http://localhost:8080/v1/subscribe?channel=presence-chat&user_id=usr_42&info=%7B%22name%22%3A%22Alex%22%7D"
+```
+
+Query current online members:
+
+```bash
+curl http://localhost:8080/api/v1/channels/presence-chat/members
+```
+
+Response:
+
+```json
+{
+  "channel": "presence-chat",
+  "members_count": 1,
+  "members": [
+    {
+      "client_id": "sub-1730937600000-000001",
+      "user_id": "usr_42",
+      "info": { "name": "Alex" },
+      "joined_at": "2026-11-07T15:00:00Z"
+    }
+  ]
+}
+```
+
+### Query Channel History
+
+Fetch recent events directly from the in-memory ring buffer:
+
+```bash
+curl "http://localhost:8080/api/v1/channels/finance-trades/history?limit=20"
 ```
 
 ---
 
 ## Client Integration
 
-### Browser (Native JavaScript)
+### Using streamgate-client (Zero-Dependency Browser & Node.js SDK)
 
-```javascript
-const stream = new EventSource('/v1/subscribe?channel=finance-trades');
+Import the included lightweight client:
 
-stream.addEventListener('trade.executed', (event) => {
-  const trade = JSON.parse(event.data);
-  console.log('Trade received:', trade);
-});
+```html
+<script src="/client/streamgate.js"></script>
+<script>
+  const client = new Streamgate('http://localhost:8080', {
+    userId: 'usr_101',
+    userInfo: { name: 'Alex' }
+  });
 
-stream.onerror = () => {
-  console.log('Connection lost. Browser reconnects automatically with Last-Event-ID.');
-};
-```
+  // Standard channel subscription
+  const trades = client.subscribe('finance-trades');
+  trades.on('trade.executed', (trade) => {
+    console.log('Trade received:', trade);
+  });
 
-### Node.js Publisher
+  // Presence channel subscription
+  const room = client.subscribe('presence-room');
+  room.on('presence.member_added', (member) => {
+    console.log('User joined:', member.user_id, member.info);
+  });
+  room.on('presence.member_removed', (member) => {
+    console.log('User left:', member.user_id);
+  });
 
-```javascript
-const http = require('http');
-
-const payload = JSON.stringify({
-  channel: 'finance-trades',
-  event: 'trade.executed',
-  data: { symbol: 'BTC/USD', price: 94820.50 }
-});
-
-const req = http.request({
-  hostname: 'localhost',
-  port: 8080,
-  path: '/api/v1/publish',
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-    'Content-Length': Buffer.byteLength(payload)
-  }
-}, (res) => {
-  res.on('data', chunk => console.log(chunk.toString()));
-});
-
-req.write(payload);
-req.end();
+  client.connect();
+</script>
 ```
 
 ### Python Publisher
@@ -248,6 +281,11 @@ streamgate can be configured using command line flags or environment variables:
 | `-ring-size` | `STREAMGATE_RING_BUFFER_SIZE` | `1024` | Per-channel circular buffer replay capacity |
 | `-client-buffer` | `STREAMGATE_CLIENT_BUFFER_SIZE` | `256` | Per-client queued message limit |
 | `-heartbeat` | `STREAMGATE_HEARTBEAT_INTERVAL` | `15` | Keep-alive ping interval in seconds |
+| `-retry-interval` | `STREAMGATE_RETRY_INTERVAL` | `3` | SSE client reconnect delay directive in seconds |
+| `-webhook-url` | `STREAMGATE_WEBHOOK_URL` | `""` | Target endpoint for channel occupancy webhooks |
+| `-webhook-secret` | `STREAMGATE_WEBHOOK_SECRET` | `""` | Shared secret for HMAC-SHA256 signature on webhooks |
+| `-compression` | `STREAMGATE_ENABLE_COMPRESSION` | `true` | Enable gzip streaming compression |
+| `-redis-addr` | `STREAMGATE_REDIS_ADDR` | `""` | Redis address for distributed pub/sub clustering |
 | `-drop-policy` | `STREAMGATE_DROP_POLICY` | `drop_oldest` | Backpressure policy: `drop_oldest`, `drop_newest`, `disconnect` |
 | `-web-ui` | `STREAMGATE_ENABLE_WEB_UI` | `true` | Serve the embedded React 19 cockpit at `/` |
 

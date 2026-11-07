@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -21,6 +22,7 @@ type SubscribeHandler struct {
 	auth              *auth.Authenticator
 	metrics           *telemetry.Metrics
 	heartbeatInterval time.Duration
+	retryInterval     time.Duration
 	clientBufferSize  int
 	dropPolicy        string
 }
@@ -31,17 +33,22 @@ func NewSubscribeHandler(
 	a *auth.Authenticator,
 	m *telemetry.Metrics,
 	heartbeatInterval time.Duration,
+	retryInterval time.Duration,
 	clientBufferSize int,
 	dropPolicy string,
 ) *SubscribeHandler {
 	if heartbeatInterval <= 0 {
 		heartbeatInterval = 15 * time.Second
 	}
+	if retryInterval <= 0 {
+		retryInterval = 3 * time.Second
+	}
 	return &SubscribeHandler{
 		hub:               h,
 		auth:              a,
 		metrics:           m,
 		heartbeatInterval: heartbeatInterval,
+		retryInterval:     retryInterval,
 		clientBufferSize:  clientBufferSize,
 		dropPolicy:        dropPolicy,
 	}
@@ -78,16 +85,29 @@ func (sh *SubscribeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		lastEventID = strings.TrimSpace(r.URL.Query().Get("last_event_id"))
 	}
 
-	// 4. Set standard SSE headers
+	// 4. Extract user identity and presence info
+	userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if userID == "" {
+		userID = strings.TrimSpace(r.Header.Get("X-User-ID"))
+	}
+
+	userInfo := make(map[string]any)
+	if rawInfo := r.URL.Query().Get("info"); rawInfo != "" {
+		_ = json.Unmarshal([]byte(rawInfo), &userInfo)
+	}
+
+	// 5. Set standard SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // Prevents NGINX from buffering SSE stream
+	w.Header().Set("X-Accel-Buffering", "no")
 
-	// 5. Initialize Client abstraction
+	// 6. Initialize Client abstraction
 	clientID := fmt.Sprintf("sub-%d-%06d", time.Now().UnixMilli(), atomic.AddUint64(&clientIDSeq, 1)%1000000)
 	client := hub.NewClient(
 		clientID,
+		userID,
+		userInfo,
 		sh.clientBufferSize,
 		sh.dropPolicy,
 		r.RemoteAddr,
@@ -107,17 +127,20 @@ func (sh *SubscribeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Send initial greeting comment and flush
+	// 7. Send SSE retry directive and greeting comment
+	if sh.retryInterval > 0 {
+		fmt.Fprintf(w, "retry: %d\n", sh.retryInterval.Milliseconds())
+	}
 	fmt.Fprintf(w, ":connected client=%s channels=%s\n\n", clientID, strings.Join(requestedChannels, ","))
 	flusher.Flush()
 
-	// 6. Setup heartbeat ping ticker
+	// 8. Setup heartbeat ping ticker
 	pingTicker := time.NewTicker(sh.heartbeatInterval)
 	defer pingTicker.Stop()
 
 	ctx := r.Context()
 
-	// 7. Event delivery loop
+	// 9. Event delivery loop
 	for {
 		select {
 		case <-ctx.Done():
@@ -152,7 +175,6 @@ func (sh *SubscribeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func extractRequestedChannels(r *http.Request) []string {
 	var channels []string
 
-	// From path: /v1/subscribe/channels/{channels}
 	path := r.URL.Path
 	if idx := strings.Index(path, "/v1/subscribe/channels/"); idx != -1 {
 		raw := strings.TrimPrefix(path, "/v1/subscribe/channels/")
@@ -167,7 +189,6 @@ func extractRequestedChannels(r *http.Request) []string {
 		}
 	}
 
-	// From query params: ?channel=a,b or ?channels=a,b
 	for _, param := range []string{"channel", "channels"} {
 		if q := r.URL.Query().Get(param); q != "" {
 			for _, ch := range strings.Split(q, ",") {

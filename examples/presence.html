@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>streamgate — Presence & Multiplayer Example</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #090d16; color: #f8fafc; padding: 2rem; max-width: 800px; margin: auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 1.25rem; margin-top: 1rem; }
+    .avatars { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.75rem; min-height: 40px; align-items: center; }
+    .avatar { background: #1e293b; border: 1px solid #334155; padding: 0.3rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; display: flex; items-center; gap: 0.4rem; }
+    .avatar.me { border-color: #10b981; background: rgba(16, 185, 129, 0.15); color: #34d399; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block; }
+    #chatLog { background: #020617; border: 1px solid #1e293b; border-radius: 8px; padding: 1rem; height: 260px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; margin-top: 1rem; }
+    .msg { margin-bottom: 0.4rem; }
+    .user { color: #38bdf8; font-weight: 600; }
+    .sys { color: #c084fc; font-style: italic; }
+    input, button { padding: 0.5rem 0.8rem; border-radius: 6px; font-size: 0.85rem; border: 1px solid #334155; }
+    input { background: #020617; color: #f8fafc; }
+    button { background: #10b981; color: #020617; font-weight: 600; cursor: pointer; border: none; }
+    button:hover { background: #059669; }
+  </style>
+  <script src="/client/streamgate.js"></script>
+</head>
+<body>
+  <h1>streamgate Presence Channels</h1>
+  <p style="color:#94a3b8; font-size:0.85rem;">Multiplayer member tracking and automatic join/leave broadcast.</p>
+
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <span style="font-weight:600; font-size:0.9rem;">Online Members in <code style="color:#10b981">presence-lobby</code></span>
+      <span id="memberCount" style="font-size:0.8rem; color:#94a3b8;">0 members</span>
+    </div>
+    <div id="avatarList" class="avatars"></div>
+  </div>
+
+  <div class="card">
+    <div id="chatLog"></div>
+    <div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
+      <input id="chatInput" style="flex:1" type="text" placeholder="Type a message and press Enter...">
+      <button onclick="sendChatMessage()">Send</button>
+    </div>
+  </div>
+
+  <script>
+    const randomNames = ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo', 'Falcon'];
+    const myName = randomNames[Math.floor(Math.random() * randomNames.length)] + '-' + Math.floor(Math.random() * 900 + 100);
+    const myUserId = 'usr_' + Math.random().toString(36).substring(2, 9);
+
+    const client = new Streamgate('', {
+      userId: myUserId,
+      userInfo: { name: myName }
+    });
+
+    const channel = client.subscribe('presence-lobby');
+    const membersMap = new Map();
+
+    channel.on('presence.member_added', (data) => {
+      membersMap.set(data.user_id, data.info?.name || data.user_id);
+      renderMembers();
+      addLog('System', `${data.info?.name || data.user_id} joined the room.`, 'sys');
+    });
+
+    channel.on('presence.member_removed', (data) => {
+      const name = membersMap.get(data.user_id) || data.user_id;
+      membersMap.delete(data.user_id);
+      renderMembers();
+      addLog('System', `${name} left the room.`, 'sys');
+    });
+
+    channel.on('chat.message', (data) => {
+      addLog(data.name, data.text);
+    });
+
+    client.connect();
+
+    // Query initial members via REST
+    client.getMembers('presence-lobby').then(res => {
+      if (res && res.members) {
+        res.members.forEach(m => membersMap.set(m.user_id, m.info?.name || m.user_id));
+        renderMembers();
+      }
+    }).catch(() => {});
+
+    function renderMembers() {
+      const container = document.getElementById('avatarList');
+      container.innerHTML = '';
+      membersMap.forEach((name, id) => {
+        const chip = document.createElement('div');
+        chip.className = 'avatar' + (id === myUserId ? ' me' : '');
+        chip.innerHTML = `<span class="dot"></span><span>${name}${id === myUserId ? ' (You)' : ''}</span>`;
+        container.appendChild(chip);
+      });
+      document.getElementById('memberCount').textContent = `${membersMap.size} members`;
+    }
+
+    function addLog(author, text, cls = '') {
+      const log = document.getElementById('chatLog');
+      const div = document.createElement('div');
+      div.className = 'msg ' + cls;
+      div.innerHTML = `<span class="user">${author}:</span> <span>${escapeHtml(text)}</span>`;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+      const p = document.createElement('p');
+      p.textContent = s;
+      return p.innerHTML;
+    }
+
+    function sendChatMessage() {
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+
+      fetch('/api/v1/publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel: 'presence-lobby',
+          event: 'chat.message',
+          data: { name: myName, text: text }
+        })
+      });
+      input.value = '';
+    }
+
+    document.getElementById('chatInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendChatMessage();
+    });
+  </script>
+</body>
+</html>

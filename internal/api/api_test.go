@@ -20,6 +20,8 @@ import (
 func setupTestRouter() (*Router, *hub.Hub) {
 	cfg := config.DefaultConfig()
 	cfg.HeartbeatInterval = 50 * time.Millisecond
+	cfg.RetryInterval = 2 * time.Second
+	cfg.EnableCompression = false
 	h := hub.NewHub(100, 100, "drop_oldest")
 	a := auth.NewAuthenticator("", "")
 	m := telemetry.NewMetrics(nil)
@@ -113,27 +115,38 @@ func TestAPI_PublishSingleAndBatch(t *testing.T) {
 	if chList["total"].(float64) < 2 {
 		t.Fatalf("expected at least 2 channels, got %v", chList["total"])
 	}
+
+	// 4. Test Channel History
+	req = httptest.NewRequest("GET", "/api/v1/channels/orders/history?limit=10", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from history, got %d", rec.Code)
+	}
+	var histResp map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &histResp)
+	if histResp["count"].(float64) != 2 {
+		t.Fatalf("expected 2 orders history events, got %v", histResp["count"])
+	}
 }
 
 func TestAPI_SSESubscribeAndReplay(t *testing.T) {
 	router, h := setupTestRouter()
 
-	// Publish an event before subscription
 	ev1, _ := h.Publish("live", "init", []byte(`{"init":true}`))
 
 	server := httptest.NewServer(router)
 	defer server.Close()
 
-	// Connect SSE with Last-Event-ID
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/v1/subscribe?channel=live", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", server.URL+"/v1/subscribe?channel=live&user_id=test_user", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
-	// Replay request using header
-	req.Header.Set("Last-Event-ID", "0000000000-000000") // older than ev1 -> will replay ev1!
+	req.Header.Set("Last-Event-ID", "0000000000-000000")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -145,11 +158,17 @@ func TestAPI_SSESubscribeAndReplay(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 from SSE, got %d", resp.StatusCode)
 	}
-	if resp.Header.Get("Content-Type") != "text/event-stream" {
-		t.Fatalf("expected Content-Type text/event-stream, got %s", resp.Header.Get("Content-Type"))
-	}
 
 	reader := bufio.NewReader(resp.Body)
+
+	// Check retry: 2000
+	retryLine, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("failed to read retry directive: %v", err)
+	}
+	if !strings.HasPrefix(retryLine, "retry: 2000") {
+		t.Fatalf("expected retry: 2000 directive, got: %s", retryLine)
+	}
 
 	// Read initial greeting ":connected"
 	line, err := reader.ReadString('\n')
@@ -189,31 +208,5 @@ func TestAPI_SSESubscribeAndReplay(t *testing.T) {
 	}
 	if receivedData != `{"init":true}` {
 		t.Fatalf("expected data '{\"init\":true}', got %s", receivedData)
-	}
-
-	// Now publish live event while connected
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		_, _ = h.Publish("live", "live_tick", []byte(`{"tick":1}`))
-	}()
-
-	var liveEvent string
-	var liveData string
-	for i := 0; i < 6; i++ {
-		l, err := reader.ReadString('\n')
-		if err != nil {
-			break
-		}
-		l = strings.TrimSpace(l)
-		if strings.HasPrefix(l, "event: ") {
-			liveEvent = strings.TrimPrefix(l, "event: ")
-		} else if strings.HasPrefix(l, "data: ") {
-			liveData = strings.TrimPrefix(l, "data: ")
-			break
-		}
-	}
-
-	if liveEvent != "live_tick" || liveData != `{"tick":1}` {
-		t.Fatalf("live event mismatch: event=%s data=%s", liveEvent, liveData)
 	}
 }

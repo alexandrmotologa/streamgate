@@ -143,3 +143,21 @@ func (rb *RingBuffer) GetLatest(n int) []*Event {
 
 	return result
 }
+
+// GetHistory retrieves historical events respecting limit and optional lastEventID (since).
+func (rb *RingBuffer) GetHistory(limit int, since string) []*Event {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	if since != "" {
+		events := rb.GetSince(since)
+		if len(events) > limit {
+			return events[len(events)-limit:]
+		}
+		return events
+	}
+
+	return rb.GetLatest(limit)
+}
+

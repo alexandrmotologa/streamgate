@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Code2,
   BookOpen,
+  KeyRound,
 } from 'lucide-react';
 import { GatewayStats, RuntimeStats, ChannelInfo, LiveEventItem } from './types';
 import { OverviewGauges } from './components/OverviewGauges';
@@ -16,6 +17,7 @@ import { ChannelExplorer } from './components/ChannelExplorer';
 import { LiveEventFeed } from './components/LiveEventFeed';
 import { TestPublisher } from './components/TestPublisher';
 import { ReplayTester } from './components/ReplayTester';
+import { JwtGenerator } from './components/JwtGenerator';
 
 export function App() {
   const [tab, setTab] = useState<'channels' | 'live' | 'publish' | 'replay'>('channels');
@@ -27,6 +29,7 @@ export function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [ratePerSec, setRatePerSec] = useState(0);
   const [showDocs, setShowDocs] = useState(false);
+  const [showJwt, setShowJwt] = useState(false);
 
   // Rate tracking
   const messageCountRef = useRef(0);
@@ -178,6 +181,15 @@ export function App() {
             </div>
 
             <button
+              onClick={() => setShowJwt(true)}
+              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition text-xs flex items-center gap-1.5 px-2.5"
+              title="JWT Token Generator"
+            >
+              <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">JWT Gen</span>
+            </button>
+
+            <button
               onClick={() => setShowDocs(!showDocs)}
               className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg transition text-xs flex items-center gap-1.5 px-2.5"
             >
@@ -298,6 +310,8 @@ export function App() {
         )}
 
         {tab === 'replay' && <ReplayTester />}
+
+        {showJwt && <JwtGenerator onClose={() => setShowJwt(false)} />}
 
         {/* API Docs & Quick-Start Card */}
         {showDocs && (

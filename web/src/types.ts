@@ -28,6 +28,8 @@ export interface ChannelInfo {
   buffer_capacity: number;
   created_at: string;
   last_published: string;
+  is_presence?: boolean;
+  member_count?: number;
 }
 
 export interface LiveEventItem {
@@ -37,4 +39,11 @@ export interface LiveEventItem {
   data: string;
   timestamp: string;
   isReplay?: boolean;
+}
+
+export interface PresenceMember {
+  client_id: string;
+  user_id: string;
+  info: Record<string, any>;
+  joined_at?: string;
 }

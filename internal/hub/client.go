@@ -6,9 +6,19 @@ import (
 	"time"
 )
 
+// MemberInfo represents a user's presence state in a presence channel.
+type MemberInfo struct {
+	ClientID string         `json:"client_id"`
+	UserID   string         `json:"user_id"`
+	UserInfo map[string]any `json:"info"`
+	JoinedAt time.Time      `json:"joined_at"`
+}
+
 // Client represents an active HTTP SSE subscriber connection.
 type Client struct {
 	ID           string
+	UserID       string
+	UserInfo     map[string]any
 	Send         chan *Event
 	Channels     map[string]struct{}
 	channelsMu   sync.RWMutex
@@ -22,15 +32,31 @@ type Client struct {
 }
 
 // NewClient initializes a new subscriber connection abstraction.
-func NewClient(id string, bufferSize int, dropPolicy string, remoteAddr, userAgent string) *Client {
+func NewClient(
+	id string,
+	userID string,
+	userInfo map[string]any,
+	bufferSize int,
+	dropPolicy string,
+	remoteAddr, userAgent string,
+) *Client {
 	if bufferSize <= 0 {
 		bufferSize = 256
 	}
 	if dropPolicy == "" {
 		dropPolicy = "drop_oldest"
 	}
+	if userID == "" {
+		userID = id
+	}
+	if userInfo == nil {
+		userInfo = make(map[string]any)
+	}
+
 	return &Client{
 		ID:          id,
+		UserID:      userID,
+		UserInfo:    userInfo,
 		Send:        make(chan *Event, bufferSize),
 		Channels:    make(map[string]struct{}),
 		ConnectedAt: time.Now(),

@@ -1,13 +1,21 @@
 package hub
 
 import (
+	"encoding/json"
 	"hash/fnv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 const numStripes = 64
+
+// LifecycleListener defines notifications for channel occupancy changes.
+type LifecycleListener interface {
+	OnChannelOccupied(channel string)
+	OnChannelVacated(channel string)
+}
 
 // subscriberStripe is a sharded bucket of subscribers with its own RWMutex.
 type subscriberStripe struct {
@@ -25,14 +33,25 @@ type Channel struct {
 	totalDelivered  uint64
 	lastPublishedAt atomic.Value // holds time.Time
 	CreatedAt       time.Time
+
+	// Presence channel support
+	isPresence      bool
+	presenceMu      sync.RWMutex
+	presenceMembers map[string]*MemberInfo
+
+	// Lifecycle hooks
+	listener LifecycleListener
 }
 
 // NewChannel initializes a channel with lock-striped subscriber storage.
-func NewChannel(name string, ringCapacity int) *Channel {
+func NewChannel(name string, ringCapacity int, listener LifecycleListener) *Channel {
 	ch := &Channel{
-		Name:      name,
-		Buffer:    NewRingBuffer(ringCapacity),
-		CreatedAt: time.Now(),
+		Name:            name,
+		Buffer:          NewRingBuffer(ringCapacity),
+		CreatedAt:       time.Now(),
+		isPresence:      strings.HasPrefix(name, "presence-"),
+		presenceMembers: make(map[string]*MemberInfo),
+		listener:        listener,
 	}
 	for i := 0; i < numStripes; i++ {
 		ch.stripes[i].clients = make(map[string]*Client)
@@ -47,40 +66,122 @@ func getStripeIndex(clientID string) uint32 {
 	return h.Sum32() % numStripes
 }
 
-// AddSubscriber registers a client with the channel.
+// AddSubscriber registers a client with the channel and fires presence / lifecycle hooks.
 func (ch *Channel) AddSubscriber(c *Client) {
 	idx := getStripeIndex(c.ID)
 	stripe := &ch.stripes[idx]
 
+	isNew := false
 	stripe.mu.Lock()
 	if _, exists := stripe.clients[c.ID]; !exists {
 		stripe.clients[c.ID] = c
-		atomic.AddInt64(&ch.totalSubCount, 1)
+		isNew = true
 	}
 	stripe.mu.Unlock()
 
+	if !isNew {
+		return
+	}
+
 	c.Subscribe(ch.Name)
+	newTotal := atomic.AddInt64(&ch.totalSubCount, 1)
+
+	// Trigger lifecycle hook if channel transitioned 0 -> 1
+	if newTotal == 1 && ch.listener != nil {
+		ch.listener.OnChannelOccupied(ch.Name)
+	}
+
+	// Presence tracking
+	if ch.isPresence {
+		member := &MemberInfo{
+			ClientID: c.ID,
+			UserID:   c.UserID,
+			UserInfo: c.UserInfo,
+			JoinedAt: time.Now(),
+		}
+
+		ch.presenceMu.Lock()
+		ch.presenceMembers[c.ID] = member
+		ch.presenceMu.Unlock()
+
+		// Broadcast member_added event
+		payload, err := json.Marshal(map[string]any{
+			"user_id":   member.UserID,
+			"client_id": member.ClientID,
+			"info":      member.UserInfo,
+			"action":    "member_added",
+		})
+		if err == nil {
+			id, seq := NextEventID()
+			ev := &Event{
+				ID:        id,
+				Seq:       seq,
+				Channel:   ch.Name,
+				Event:     "presence.member_added",
+				Data:      payload,
+				Timestamp: time.Now(),
+			}
+			ev.FormatSSE()
+			ch.Broadcast(ev)
+		}
+	}
 }
 
-// RemoveSubscriber unregisters a client from the channel.
+// RemoveSubscriber unregisters a client from the channel and fires presence / lifecycle hooks.
 func (ch *Channel) RemoveSubscriber(c *Client) {
 	idx := getStripeIndex(c.ID)
 	stripe := &ch.stripes[idx]
 
+	removed := false
 	stripe.mu.Lock()
 	if _, exists := stripe.clients[c.ID]; exists {
 		delete(stripe.clients, c.ID)
-		atomic.AddInt64(&ch.totalSubCount, -1)
+		removed = true
 	}
 	stripe.mu.Unlock()
 
+	if !removed {
+		return
+	}
+
 	c.Unsubscribe(ch.Name)
+	newTotal := atomic.AddInt64(&ch.totalSubCount, -1)
+
+	// Trigger lifecycle hook if channel vacated 1 -> 0
+	if newTotal == 0 && ch.listener != nil {
+		ch.listener.OnChannelVacated(ch.Name)
+	}
+
+	// Presence tracking
+	if ch.isPresence {
+		ch.presenceMu.Lock()
+		delete(ch.presenceMembers, c.ID)
+		ch.presenceMu.Unlock()
+
+		// Broadcast member_removed event
+		payload, err := json.Marshal(map[string]any{
+			"user_id":   c.UserID,
+			"client_id": c.ID,
+			"action":    "member_removed",
+		})
+		if err == nil {
+			id, seq := NextEventID()
+			ev := &Event{
+				ID:        id,
+				Seq:       seq,
+				Channel:   ch.Name,
+				Event:     "presence.member_removed",
+				Data:      payload,
+				Timestamp: time.Now(),
+			}
+			ev.FormatSSE()
+			ch.Broadcast(ev)
+		}
+	}
 }
 
 // Broadcast sends an event to all subscribers of this channel and caches it in the ring buffer.
-// Returns the number of subscribers the event was delivered to.
 func (ch *Channel) Broadcast(e *Event) int {
-	// Cache in ring buffer
 	ch.Buffer.Add(e)
 	atomic.AddUint64(&ch.totalPublished, 1)
 	ch.lastPublishedAt.Store(time.Now())
@@ -110,6 +211,27 @@ func (ch *Channel) SubscriberCount() int {
 		return 0
 	}
 	return int(cnt)
+}
+
+// GetMembers returns snapshot of members in a presence channel.
+func (ch *Channel) GetMembers() []*MemberInfo {
+	if !ch.isPresence {
+		return nil
+	}
+
+	ch.presenceMu.RLock()
+	defer ch.presenceMu.RUnlock()
+
+	result := make([]*MemberInfo, 0, len(ch.presenceMembers))
+	for _, m := range ch.presenceMembers {
+		result = append(result, m)
+	}
+	return result
+}
+
+// IsPresence returns true if this channel tracks member presence.
+func (ch *Channel) IsPresence() bool {
+	return ch.isPresence
 }
 
 // Stats returns a summary snapshot of channel metrics.

@@ -71,6 +71,7 @@ func (r *Router) registerRoutes() {
 		r.auth,
 		r.metrics,
 		r.cfg.HeartbeatInterval,
+		r.cfg.RetryInterval,
 		r.cfg.ClientBufferSize,
 		r.cfg.DropPolicy,
 	)
@@ -123,11 +124,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) applyMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// CORS Headers
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Last-Event-ID, X-API-Key, X-Auth-Token")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Last-Event-ID, X-API-Key, X-Auth-Token, X-User-ID")
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Type, Last-Event-ID")
 
 		// Security Headers
@@ -142,4 +143,6 @@ func (r *Router) applyMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, req)
 	})
+
+	return CompressMiddleware(r.cfg.EnableCompression, handler)
 }

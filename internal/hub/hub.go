@@ -18,6 +18,8 @@ type ChannelInfo struct {
 	BufferCapacity int       `json:"buffer_capacity"`
 	CreatedAt      time.Time `json:"created_at"`
 	LastPublished  time.Time `json:"last_published"`
+	IsPresence     bool      `json:"is_presence"`
+	MemberCount    int       `json:"member_count"`
 }
 
 // HubStats provides high-level telemetry on gateway runtime performance.
@@ -31,15 +33,22 @@ type HubStats struct {
 	UptimeSeconds          int64  `json:"uptime_seconds"`
 }
 
+// ClusterBroadcaster defines the interface for distributed Redis/Valkey pub/sub.
+type ClusterBroadcaster interface {
+	PublishToCluster(channel, event string, data []byte) error
+}
+
 // Hub is the central broker orchestrating channels, routing, and subscriber lifecycles.
 type Hub struct {
-	channelsMu        sync.RWMutex
-	channels          map[string]*Channel
-	clients           sync.Map // string -> *Client
-	defaultRingCap    int
-	defaultClientCap  int
-	defaultDropPolicy string
-	startedAt         time.Time
+	channelsMu         sync.RWMutex
+	channels           map[string]*Channel
+	clients            sync.Map // string -> *Client
+	defaultRingCap     int
+	defaultClientCap   int
+	defaultDropPolicy  string
+	startedAt          time.Time
+	lifecycleListener  LifecycleListener
+	clusterBroadcaster ClusterBroadcaster
 
 	// Counters
 	activeConnections  int64
@@ -70,6 +79,32 @@ func NewHub(ringCap, clientCap int, dropPolicy string) *Hub {
 	}
 }
 
+// SetLifecycleListener registers the handler for channel occupancy events (webhooks).
+func (h *Hub) SetLifecycleListener(l LifecycleListener) {
+	h.channelsMu.Lock()
+	defer h.channelsMu.Unlock()
+	h.lifecycleListener = l
+}
+
+// SetClusterBroadcaster registers a Redis cluster adapter.
+func (h *Hub) SetClusterBroadcaster(cb ClusterBroadcaster) {
+	h.clusterBroadcaster = cb
+}
+
+// OnChannelOccupied forwards event to registered lifecycle listener.
+func (h *Hub) OnChannelOccupied(channel string) {
+	if h.lifecycleListener != nil {
+		h.lifecycleListener.OnChannelOccupied(channel)
+	}
+}
+
+// OnChannelVacated forwards event to registered lifecycle listener.
+func (h *Hub) OnChannelVacated(channel string) {
+	if h.lifecycleListener != nil {
+		h.lifecycleListener.OnChannelVacated(channel)
+	}
+}
+
 // GetOrCreateChannel returns an existing channel or safely instantiates a new one.
 func (h *Hub) GetOrCreateChannel(name string) *Channel {
 	name = strings.TrimSpace(name)
@@ -92,13 +127,12 @@ func (h *Hub) GetOrCreateChannel(name string) *Channel {
 		return ch
 	}
 
-	ch = NewChannel(name, h.defaultRingCap)
+	ch = NewChannel(name, h.defaultRingCap, h)
 	h.channels[name] = ch
 	return ch
 }
 
 // RegisterClient stores the client in the hub and hooks it into requested channels.
-// Replays missed events if lastEventID is supplied.
 func (h *Hub) RegisterClient(c *Client, channels []string, lastEventID string) {
 	h.clients.Store(c.ID, c)
 	atomic.AddInt64(&h.activeConnections, 1)
@@ -144,8 +178,19 @@ func (h *Hub) UnregisterClient(c *Client) {
 	h.channelsMu.RUnlock()
 }
 
-// Publish broadcasts an event to the target channel and any wildcard patterns matching the channel.
+// Publish broadcasts an event locally and distributes to Redis cluster if enabled.
 func (h *Hub) Publish(channelName, eventType string, data []byte) (*Event, int) {
+	ev, delivered := h.PublishLocal(channelName, eventType, data)
+
+	if h.clusterBroadcaster != nil {
+		_ = h.clusterBroadcaster.PublishToCluster(channelName, eventType, data)
+	}
+
+	return ev, delivered
+}
+
+// PublishLocal broadcasts an event to local subscribers only without echo to cluster.
+func (h *Hub) PublishLocal(channelName, eventType string, data []byte) (*Event, int) {
 	channelName = strings.TrimSpace(channelName)
 	if channelName == "" {
 		channelName = "default"
@@ -160,7 +205,6 @@ func (h *Hub) Publish(channelName, eventType string, data []byte) (*Event, int) 
 		Data:      data,
 		Timestamp: time.Now(),
 	}
-	// Pre-format SSE frame once for all subscribers
 	ev.FormatSSE()
 
 	delivered := 0
@@ -169,7 +213,7 @@ func (h *Hub) Publish(channelName, eventType string, data []byte) (*Event, int) 
 	targetChannel := h.GetOrCreateChannel(channelName)
 	delivered += targetChannel.Broadcast(ev)
 
-	// 2. Wildcard channel broadcast (e.g., "sensors.*" matches "sensors.temp")
+	// 2. Wildcard channel broadcast (e.g. "sensors.*" matches "sensors.temp")
 	h.channelsMu.RLock()
 	for name, ch := range h.channels {
 		if name == channelName {
@@ -187,7 +231,6 @@ func (h *Hub) Publish(channelName, eventType string, data []byte) (*Event, int) 
 	return ev, delivered
 }
 
-// isWildcardMatch checks if a pattern like "stocks.*" matches "stocks.btc" or "stocks.apple.us"
 func isWildcardMatch(pattern, channel string) bool {
 	if strings.HasSuffix(pattern, ".*") {
 		prefix := strings.TrimSuffix(pattern, ".*")
@@ -200,6 +243,30 @@ func isWildcardMatch(pattern, channel string) bool {
 	return false
 }
 
+// GetChannelMembers returns the list of active members in a presence channel.
+func (h *Hub) GetChannelMembers(channelName string) []*MemberInfo {
+	h.channelsMu.RLock()
+	ch, exists := h.channels[channelName]
+	h.channelsMu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+	return ch.GetMembers()
+}
+
+// GetChannelHistory returns buffered historical events for a channel.
+func (h *Hub) GetChannelHistory(channelName string, limit int, since string) []*Event {
+	h.channelsMu.RLock()
+	ch, exists := h.channels[channelName]
+	h.channelsMu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+	return ch.Buffer.GetHistory(limit, since)
+}
+
 // ListChannels returns details of all registered channels.
 func (h *Hub) ListChannels() []ChannelInfo {
 	h.channelsMu.RLock()
@@ -208,6 +275,7 @@ func (h *Hub) ListChannels() []ChannelInfo {
 	result := make([]ChannelInfo, 0, len(h.channels))
 	for name, ch := range h.channels {
 		subs, pub, del, lastPub := ch.Stats()
+		members := ch.GetMembers()
 		result = append(result, ChannelInfo{
 			Name:           name,
 			Subscribers:    subs,
@@ -217,6 +285,8 @@ func (h *Hub) ListChannels() []ChannelInfo {
 			BufferCapacity: ch.Buffer.Capacity(),
 			CreatedAt:      ch.CreatedAt,
 			LastPublished:  lastPub,
+			IsPresence:     ch.IsPresence(),
+			MemberCount:    len(members),
 		})
 	}
 	return result
@@ -257,6 +327,6 @@ func (h *Hub) BroadcastMetricsSnapshot() {
 	stats := h.GetStats()
 	payload, err := json.Marshal(stats)
 	if err == nil {
-		h.Publish("_streamgate.metrics", "telemetry", payload)
+		h.PublishLocal("_streamgate.metrics", "telemetry", payload)
 	}
 }
