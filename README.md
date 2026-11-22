@@ -11,6 +11,8 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/alexandrmotologa/streamgate/actions/workflows/ci.yml"><img src="https://github.com/alexandrmotologa/streamgate/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/alexandrmotologa/streamgate/releases"><img src="https://img.shields.io/badge/version-v1.1.0-6366f1.svg?style=flat-square" alt="Version" /></a>
   <img src="https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go Version" />
   <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 19" />
   <img src="https://img.shields.io/badge/RAM_Budget-%3C_45_MB-10b981?style=flat-square" alt="Memory Target" />

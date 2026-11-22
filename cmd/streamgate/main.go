@@ -38,8 +38,8 @@ func (wa *webhookAdapter) OnChannelVacated(channel string) {
 
 func main() {
 	for _, arg := range os.Args[1:] {
-		if arg == "-version" || arg == "--version" || arg == "-v" {
-			fmt.Printf("streamgate v%s (Go %s)\n", version, "1.23+")
+		if arg == "version" || arg == "-version" || arg == "--version" || arg == "-v" || arg == "-V" {
+			fmt.Printf("streamgate v%s\n", version)
 			os.Exit(0)
 		}
 	}
